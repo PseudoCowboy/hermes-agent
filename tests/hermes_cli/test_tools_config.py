@@ -30,6 +30,42 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
     assert enabled == set()
 
 
+def test_get_platform_tools_filters_disallowed_workflow_outside_cli_and_discord():
+    config = {"platform_toolsets": {"telegram": ["workflow", "web"]}}
+
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "workflow" not in enabled
+
+
+def test_get_platform_tools_keeps_workflow_on_discord():
+    config = {"platform_toolsets": {"discord": ["workflow", "web"]}}
+
+    enabled = _get_platform_tools(config, "discord", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "workflow" in enabled
+
+
+def test_get_platform_tools_filters_workflow_mutating_outside_cli_and_discord():
+    config = {"platform_toolsets": {"telegram": ["workflow-mutating", "web"]}}
+
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "workflow-mutating" not in enabled
+
+
+def test_get_platform_tools_allows_workflow_readonly_everywhere():
+    config = {"platform_toolsets": {"telegram": ["workflow-readonly", "web"]}}
+
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "workflow-readonly" in enabled
+
+
 def test_platform_toolset_summary_uses_explicit_platform_list():
     config = {}
 
@@ -165,6 +201,17 @@ def test_save_platform_tools_handles_empty_existing_config():
     saved_toolsets = config["platform_toolsets"]["telegram"]
     assert "web" in saved_toolsets
     assert "terminal" in saved_toolsets
+
+
+def test_save_platform_tools_strips_workflow_from_disallowed_platforms():
+    config = {"platform_toolsets": {"telegram": ["web", "workflow"]}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", {"web", "workflow"})
+
+    saved_toolsets = config["platform_toolsets"]["telegram"]
+    assert "web" in saved_toolsets
+    assert "workflow" not in saved_toolsets
 
 
 def test_save_platform_tools_handles_invalid_existing_config():

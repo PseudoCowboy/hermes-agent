@@ -59,6 +59,31 @@ class TestToolsEnableBuiltin:
         saved = mock_save.call_args[0][0]
         assert saved["platform_toolsets"]["cli"].count("web") == 1
 
+    def test_enable_rejects_workflow_on_disallowed_platform(self, capsys):
+        config = {"platform_toolsets": {"telegram": ["web"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["workflow-mutating"], platform="telegram")
+            )
+
+        saved = mock_save.call_args[0][0]
+        out = capsys.readouterr().out
+        assert "not available on platform 'telegram'" in out
+        assert "workflow-mutating" not in saved["platform_toolsets"]["telegram"]
+        assert "web" in saved["platform_toolsets"]["telegram"]
+
+    def test_enable_workflow_readonly_allowed_on_telegram(self):
+        config = {"platform_toolsets": {"telegram": ["web"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config") as mock_save:
+            tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["workflow-readonly"], platform="telegram")
+            )
+
+        saved = mock_save.call_args[0][0]
+        assert "workflow-readonly" in saved["platform_toolsets"]["telegram"]
+
 
 # ── MCP tool disable ────────────────────────────────────────────────────────
 

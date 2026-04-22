@@ -101,6 +101,27 @@ class TestScanSkillCommands:
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
 
+    def test_repo_workflow_skills_are_discoverable(self):
+        repo_skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", repo_skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("tools.skills_tool._get_disabled_skill_names", return_value=set()),
+        ):
+            result = scan_skill_commands()
+
+        for command in (
+            "/workflow-create-project",
+            "/workflow-plan",
+            "/workflow-approve-plan",
+            "/workflow-decompose",
+            "/workflow-execute-stream",
+            "/workflow-review-stream",
+            "/workflow-status",
+            "/workflow-dashboard",
+        ):
+            assert command in result
+
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
         """Skill names with +, /, or other special chars produce clean cmd keys."""

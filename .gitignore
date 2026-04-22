@@ -50,6 +50,8 @@ skills/.hub/
 ignored/
 .worktrees/
 environments/benchmarks/evals/
+.workflow-locks/
+.workflow-staging/
 
 # Release script temp files
 .release_notes.md

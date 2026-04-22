@@ -85,7 +85,23 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("workflow-readonly",  "📋 Workflow (read-only)",     "workflow_status — inspect plan/task state"),
+    ("workflow-mutating",  "📋 Workflow (mutating)",      "projects, plans, decompose, task sync, reviews, handoffs, checkpoints"),
 ]
+
+# Built-in toolsets that are only valid on specific platforms.
+_PLATFORM_TOOLSET_ALLOWLISTS = {
+    "workflow-mutating": {"cli", "discord"},
+}
+
+# Legacy toolset names that were previously exposed as configurable entries
+# but have since been renamed/split. We still need to defend against saved
+# configs referencing them from disallowed platforms — otherwise they would
+# slip through the `explicit_passthrough` path in `_get_platform_tools` and
+# resolve at the gateway to the full (mutating) tool set.
+_LEGACY_PLATFORM_GATED_TOOLSETS = {
+    "workflow": {"cli", "discord"},
+}
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
@@ -93,13 +109,36 @@ CONFIGURABLE_TOOLSETS = [
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
 
 
-def _get_effective_configurable_toolsets():
+def _is_toolset_allowed_on_platform(ts_key: str, platform: str) -> bool:
+    """Return whether a built-in toolset may be enabled on *platform*."""
+    allowed_platforms = _PLATFORM_TOOLSET_ALLOWLISTS.get(ts_key)
+    return allowed_platforms is None or platform in allowed_platforms
+
+
+def _get_allowed_builtin_toolset_keys(platform: str) -> set[str]:
+    """Return built-in configurable toolsets that are valid on *platform*."""
+    return {
+        ts_key
+        for ts_key, _, _ in CONFIGURABLE_TOOLSETS
+        if _is_toolset_allowed_on_platform(ts_key, platform)
+    }
+
+
+def _get_effective_configurable_toolsets(platforms=None):
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
     Plugin toolsets are appended at the end so they appear after the
     built-in toolsets in the TUI checklist.
     """
     result = list(CONFIGURABLE_TOOLSETS)
+    if platforms is not None:
+        if isinstance(platforms, str):
+            platforms = [platforms]
+        result = [
+            entry
+            for entry in result
+            if all(_is_toolset_allowed_on_platform(entry[0], platform) for platform in platforms)
+        ]
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
@@ -501,6 +540,7 @@ def _get_platform_tools(
         toolset_names = [default_ts]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    allowed_builtin_toolsets = _get_allowed_builtin_toolset_keys(platform)
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
@@ -541,6 +581,12 @@ def _get_platform_tools(
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 
+    enabled_toolsets = {
+        ts
+        for ts in enabled_toolsets
+        if ts in plugin_ts_keys or ts in allowed_builtin_toolsets
+    }
+
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
@@ -550,6 +596,16 @@ def _get_platform_tools(
         if ts not in configurable_keys
         and ts not in plugin_ts_keys
         and ts not in platform_default_keys
+    }
+
+    # Defend against legacy/renamed toolset names that are platform-gated.
+    # For example: configs saved before the `workflow` → `workflow-readonly` /
+    # `workflow-mutating` split may still list `workflow` under non-CLI/Discord
+    # platforms. Silently drop those here so they don't reach the gateway.
+    explicit_passthrough = {
+        ts
+        for ts in explicit_passthrough
+        if platform in _LEGACY_PLATFORM_GATED_TOOLSETS.get(ts, {platform})
     }
 
     # MCP servers are expected to be available on all platforms by default.
@@ -593,6 +649,12 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_keys = _get_plugin_toolset_keys()
     configurable_keys |= plugin_keys
+    allowed_builtin_toolsets = _get_allowed_builtin_toolset_keys(platform)
+    enabled_toolset_keys = {
+        ts
+        for ts in enabled_toolset_keys
+        if ts in plugin_keys or ts in allowed_builtin_toolsets
+    }
 
     # Also exclude platform default toolsets (hermes-cli, hermes-telegram, etc.)
     # These are "super" toolsets that resolve to ALL tools, so preserving them
@@ -605,10 +667,14 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         existing_toolsets = []
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
-    # defaults (i.e. only MCP server names should be preserved)
+    # defaults (i.e. only MCP server names should be preserved). Also strip
+    # legacy/renamed platform-gated names (e.g. the old `workflow` toolset)
+    # when saving for a platform they are no longer allowed on.
     preserved_entries = {
         entry for entry in existing_toolsets
-        if entry not in configurable_keys and entry not in platform_default_keys
+        if entry not in configurable_keys
+        and entry not in platform_default_keys
+        and platform in _LEGACY_PLATFORM_GATED_TOOLSETS.get(entry, {platform})
     }
 
     # Merge preserved entries with new enabled toolsets
@@ -792,7 +858,12 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return _tool_token_cache
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
+def _prompt_toolset_checklist(
+    platform_label: str,
+    enabled: Set[str],
+    *,
+    platforms=None,
+) -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -800,7 +871,7 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     # Pre-compute per-tool token counts (cached after first call).
     tool_tokens = _estimate_tool_tokens()
 
-    effective = _get_effective_configurable_toolsets()
+    effective = _get_effective_configurable_toolsets(platforms)
 
     labels = []
     for ts_key, ts_label, ts_desc in effective:
@@ -1316,7 +1387,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     # Non-interactive summary mode for CLI usage
     if getattr(args, "summary", False):
-        total = len(_get_effective_configurable_toolsets())
         print(color("⚕ Tool Summary", Colors.CYAN, Colors.BOLD))
         print()
         summary = _platform_toolset_summary(config, enabled_platforms)
@@ -1324,10 +1394,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             pinfo = PLATFORMS[pkey]
             enabled = summary.get(pkey, set())
             count = len(enabled)
+            total = len(_get_effective_configurable_toolsets(pkey))
             print(color(f"  {pinfo['label']}", Colors.BOLD) + color(f"  ({count}/{total})", Colors.DIM))
             if enabled:
                 for ts_key in sorted(enabled):
-                    label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts_key), ts_key)
+                    label = next((l for k, l, _ in _get_effective_configurable_toolsets(pkey) if k == ts_key), ts_key)
                     print(color(f"    ✓ {label}", Colors.GREEN))
             else:
                 print(color("    (none enabled)", Colors.DIM))
@@ -1349,7 +1420,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
             # Show checklist
-            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+            new_enabled = _prompt_toolset_checklist(
+                pinfo["label"],
+                checklist_preselected,
+                platforms=pkey,
+            )
 
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
@@ -1407,7 +1482,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         pinfo = PLATFORMS[pkey]
         current = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
         count = len(current)
-        total = len(_get_effective_configurable_toolsets())
+        total = len(_get_effective_configurable_toolsets(pkey))
         platform_choices.append(f"Configure {pinfo['label']}  ({count}/{total} enabled)")
         platform_keys.append(pkey)
 
@@ -1453,7 +1528,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             all_current = set()
             for pk in platform_keys:
                 all_current |= _get_platform_tools(config, pk, include_default_mcp_servers=False)
-            new_enabled = _prompt_toolset_checklist("All platforms", all_current)
+            new_enabled = _prompt_toolset_checklist(
+                "All platforms",
+                all_current,
+                platforms=platform_keys,
+            )
             if new_enabled != all_current:
                 for pk in platform_keys:
                     prev = _get_platform_tools(config, pk, include_default_mcp_servers=False)
@@ -1479,7 +1558,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                 # Update choice labels
                 for ci, pk in enumerate(platform_keys):
                     new_count = len(_get_platform_tools(config, pk, include_default_mcp_servers=False))
-                    total = len(_get_effective_configurable_toolsets())
+                    total = len(_get_effective_configurable_toolsets(pk))
                     platform_choices[ci] = f"Configure {PLATFORMS[pk]['label']}  ({new_count}/{total} enabled)"
             else:
                 print(color("  No changes", Colors.DIM))
@@ -1493,7 +1572,11 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
         # Show checklist
-        new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
+        new_enabled = _prompt_toolset_checklist(
+            pinfo["label"],
+            current_enabled,
+            platforms=pkey,
+        )
 
         if new_enabled != current_enabled:
             added = new_enabled - current_enabled
@@ -1524,7 +1607,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
         # Update the choice label with new count
         new_count = len(_get_platform_tools(config, pkey, include_default_mcp_servers=False))
-        total = len(_get_effective_configurable_toolsets())
+        total = len(_get_effective_configurable_toolsets(pkey))
         platform_choices[idx] = f"Configure {pinfo['label']}  ({new_count}/{total} enabled)"
 
     print()
@@ -1705,7 +1788,7 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
-    effective = _get_effective_configurable_toolsets()
+    effective = _get_effective_configurable_toolsets(platform)
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     print(f"Built-in toolsets ({platform}):")
@@ -1764,12 +1847,29 @@ def tools_disable_enable_command(args):
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
-    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+    builtin_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    allowed_builtin_toolsets = _get_allowed_builtin_toolset_keys(platform)
+    plugin_toolsets = _get_plugin_toolset_keys()
+
+    valid_toolsets = builtin_toolsets | plugin_toolsets
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     if unknown_toolsets:
         for name in unknown_toolsets:
             _print_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
+
+    disallowed_toolsets = []
+    if action == "enable":
+        disallowed_toolsets = [
+            t for t in toolset_targets
+            if t in builtin_toolsets and t not in allowed_builtin_toolsets
+        ]
+        if disallowed_toolsets:
+            for name in disallowed_toolsets:
+                _print_error(
+                    f"Toolset '{name}' is not available on platform '{platform}'"
+                )
+            toolset_targets = [t for t in toolset_targets if t not in disallowed_toolsets]
 
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)
@@ -1784,7 +1884,9 @@ def tools_disable_enable_command(args):
 
     successful = [
         t for t in targets
-        if t not in unknown_toolsets and (":" not in t or t.split(":")[0] not in failed_servers)
+        if t not in unknown_toolsets
+        and t not in disallowed_toolsets
+        and (":" not in t or t.split(":")[0] not in failed_servers)
     ]
     if successful:
         verb = "Disabled" if action == "disable" else "Enabled"

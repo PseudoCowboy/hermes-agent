@@ -135,9 +135,44 @@ class TestToolsetConsistency:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
     def test_hermes_platforms_share_core_tools(self):
-        """All hermes-* platform toolsets should have the same tools."""
+        """All hermes-* platform toolsets should share the core tool set.
+
+        Mutating workflow tools are platform-gated (CLI + Discord only),
+        so we compare the core intersection rather than raw equality.
+        """
+        from toolsets import _HERMES_WORKFLOW_MUTATING_TOOLS
+        mutating = set(_HERMES_WORKFLOW_MUTATING_TOOLS)
         platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
-        tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
-        # All platform toolsets should be identical
+        tool_sets = [set(TOOLSETS[p]["tools"]) - mutating for p in platforms]
+        # Core (non-mutating-workflow) tools should be identical across platforms.
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_mutating_workflow_tools_only_on_cli_and_discord(self):
+        """Repo-mutating workflow tools must be opt-in per platform."""
+        from toolsets import _HERMES_WORKFLOW_MUTATING_TOOLS
+        mutating = set(_HERMES_WORKFLOW_MUTATING_TOOLS)
+        allowed = {"hermes-cli", "hermes-discord"}
+        for name, ts in TOOLSETS.items():
+            if not name.startswith("hermes-"):
+                continue
+            overlap = set(ts["tools"]) & mutating
+            if name in allowed:
+                assert overlap == mutating, f"{name} missing mutating workflow tools: {mutating - overlap}"
+            else:
+                assert overlap == set(), f"{name} must not expose mutating workflow tools: {overlap}"
+
+    def test_hermes_cli_includes_workflow_tools(self):
+        tools = set(resolve_toolset("hermes-cli"))
+        for tool in {
+            "workflow_create_project",
+            "workflow_save_plan",
+            "workflow_approve_plan",
+            "workflow_status",
+            "workflow_decompose",
+            "workflow_handoff",
+            "workflow_checkpoint",
+            "workflow_sync_tasks",
+            "workflow_review_task",
+        }:
+            assert tool in tools

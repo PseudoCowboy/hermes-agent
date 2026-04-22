@@ -50,6 +50,10 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Repo-first workflow — read-only status broadly available.
+    # Mutating workflow tools are opt-in per platform (see
+    # _HERMES_WORKFLOW_MUTATING_TOOLS below).
+    "workflow_status",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -60,6 +64,21 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+]
+
+
+# Repo-mutating workflow tools. These rewrite files under
+# groups/shared_project/active/<slug>/ and are only enabled on platforms
+# that need them (CLI, Discord). Other platforms get workflow_status only.
+_HERMES_WORKFLOW_MUTATING_TOOLS = [
+    "workflow_create_project",
+    "workflow_save_plan",
+    "workflow_approve_plan",
+    "workflow_decompose",
+    "workflow_handoff",
+    "workflow_checkpoint",
+    "workflow_sync_tasks",
+    "workflow_review_task",
 ]
 
 
@@ -201,6 +220,28 @@ TOOLSETS = {
         "includes": []
     },
 
+    "workflow-readonly": {
+        "description": "Repo-first project workflow (read-only): inspect plan/task state via workflow_status",
+        "tools": ["workflow_status"],
+        "includes": []
+    },
+
+    "workflow-mutating": {
+        "description": "Repo-first project workflow (mutating): create projects, approve plans, decompose into streams, record reviews, handoffs, checkpoints",
+        "tools": list(_HERMES_WORKFLOW_MUTATING_TOOLS),
+        "includes": []
+    },
+
+    # Back-compat composite: `workflow` still resolves to the full set so
+    # existing configs and resolve_toolset("workflow") callers keep working.
+    # The configurator no longer exposes this entry directly — users pick
+    # workflow-readonly or workflow-mutating instead.
+    "workflow": {
+        "description": "Repo-first project workflow: full set (composite of workflow-readonly + workflow-mutating)",
+        "tools": [],
+        "includes": ["workflow-readonly", "workflow-mutating"]
+    },
+
 
     # Scenario-specific toolsets
     
@@ -237,6 +278,7 @@ TOOLSETS = {
             "browser_vision", "browser_console",
             "todo", "memory",
             "session_search",
+            "workflow_status",
             "execute_code", "delegate_task",
         ],
         "includes": []
@@ -264,6 +306,9 @@ TOOLSETS = {
             "todo", "memory",
             # Session history search
             "session_search",
+            # Repo-first workflow (read-only status; mutating tools are
+            # platform-gated and live on CLI + Discord only).
+            "workflow_status",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management
@@ -276,20 +321,20 @@ TOOLSETS = {
     },
     
     "hermes-cli": {
-        "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "Full interactive CLI toolset - all default tools plus cronjob management and full workflow authoring",
+        "tools": _HERMES_CORE_TOOLS + _HERMES_WORKFLOW_MUTATING_TOOLS,
         "includes": []
     },
-    
+
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
-    
+
     "hermes-discord": {
-        "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _HERMES_CORE_TOOLS,
+        "description": "Discord bot toolset - full access including workflow authoring (terminal has safety checks via dangerous command approval)",
+        "tools": _HERMES_CORE_TOOLS + _HERMES_WORKFLOW_MUTATING_TOOLS,
         "includes": []
     },
     
