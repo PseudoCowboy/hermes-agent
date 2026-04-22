@@ -1,0 +1,21 @@
+# Telegram E2E scenarios for the Hermes bot.
+# Run with: python scripts/telegram_e2e.py --bot pseudo_duck_bot \
+#     --scenarios scripts/telegram_e2e_scenarios.yaml
+
+- send: "ping"
+  expect:
+    - "Pong"
+    - "Hermes"
+  timeout: 30
+
+- send: "/help"
+  expect:
+    - "command"
+  timeout: 30
+
+# Multi-agent workflow smoke test — Iris should ask clarifying questions
+# before Hermes drafts a plan.
+- send: "start a new project: print 'hello from hermes' in a new scratch file"
+  expect:
+    - "clarif"   # Iris
+  timeout: 60

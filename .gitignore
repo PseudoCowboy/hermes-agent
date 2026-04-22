@@ -1,5 +1,7 @@
 /venv/
 /_pycache/
+# Telegram E2E test persistent profile (contains user's Telegram Web session)
+.telegram-e2e-profile/
 *.pyc*
 __pycache__/
 .venv/

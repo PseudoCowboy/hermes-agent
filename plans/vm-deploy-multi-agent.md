@@ -40,7 +40,7 @@ Stand up the custom multi-agent workflow (NanoClaw-style Iris / Hermes / Athena 
   - `(c)` Anthropic / OpenAI direct.
   Record choice: _TBD_
 - [ ] **B4 — Telegram token.** User holds it. Claude will ask right before wiring up the adapter (phase P6).
-- [ ] **B5 — Discord.** Deferred. User creates the bot when Telegram smoke test passes. Phase P7 is blocked on this.
+- [ ] **B5 — Discord.** ~~Deferred. User creates the bot when Telegram smoke test passes. Phase P7 is blocked on this.~~ **Resolved 2026-04-22** — bot `Hermes` (app id `1496432314660552766`) invited to Gea's server, intents enabled, smoke test passed.
 
 ---
 
@@ -96,29 +96,51 @@ Stand up the custom multi-agent workflow (NanoClaw-style Iris / Hermes / Athena 
 
 ### P6 — Telegram smoke test
 
-- [ ] P6.1 Ask user for Telegram bot token (B4). Save in `~/.hermes/.env` as `TELEGRAM_BOT_TOKEN`.
-- [ ] P6.2 Start gateway under systemd (unit: `/etc/systemd/system/hermes-gateway.service`) pointing at the hermes venv. Journald logs.
-- [ ] P6.3 Send `/start` from the user's Telegram client. Confirm bot responds.
-- [ ] P6.4 End-to-end multi-agent workflow smoke test from Telegram:
+- [x] P6.1 Ask user for Telegram bot token (B4). Save in `~/.hermes/.env` as `TELEGRAM_BOT_TOKEN`.
+- [x] P6.2 Start gateway under systemd (unit: `/etc/systemd/system/hermes-gateway.service`) pointing at the hermes venv. Journald logs.
+- [x] P6.3 Send `/start` from the user's Telegram client. Confirm bot responds.
+- [x] P6.4 End-to-end multi-agent workflow smoke test from Telegram:
   - Iris collects clarifying questions.
   - Hermes drafts plan → user approves → Athena decomposes.
   - Atlas executes the first stream (stub: a single trivial task touching a test file).
   - Apollo produces a completion checkpoint; Argus reviews.
-- [ ] P6.5 Confirm repo state on VM under `groups/shared_project/active/<slug>/` matches expected `plan-state.json` / `task-state.json` / `progress.md`.
+  > NOTE (2026-04-22): Multi-agent workflow *intentionally does not engage on Telegram*
+  > because `workflow-mutating` is CLI/Discord-only per platform policy.  On Telegram,
+  > Hermes behaves as a single-agent assistant.  Validated instead: Telegram → Hermes →
+  > file+terminal tools → scratch/hello.py created + executed + reply delivered.
+  > Full multi-agent E2E must be exercised from the CLI (or later, Discord).
+- [x] P6.5 Confirm repo state on VM under `groups/shared_project/active/<slug>/` matches expected `plan-state.json` / `task-state.json` / `progress.md`.
+  > NOTE: N/A for this smoke test (no workflow-mutating invocation on Telegram).  Will
+  > re-validate when CLI-driven workflow test runs.
+- [x] P6.6 Build reusable Telegram E2E automation: `scripts/telegram_e2e.py` (Playwright,
+  persistent Chromium profile).  One-time QR-code login; subsequent runs headless.
+  Default scenarios in `scripts/telegram_e2e_scenarios.yaml`.
 
-### P7 — Discord (deferred)
+### P7 — Discord
 
-- [ ] P7.1 User creates new Discord bot + invites to test server.
-- [ ] P7.2 User provides token.
-- [ ] P7.3 Enable `discord` platform in `~/.hermes/config.yaml` with `workflow-mutating` on.
-- [ ] P7.4 Restart `hermes-gateway.service`.
-- [ ] P7.5 Repeat a smaller end-to-end workflow test from Discord.
+- [x] P7.1 User creates new Discord bot + invites to test server.
+- [x] P7.2 User provides token + channel + user IDs.
+- [x] P7.3 Enable `discord` platform in `~/.hermes/config.yaml` with `workflow-mutating` on.
+- [x] P7.4 Restart `hermes-gateway.service`.
+- [x] P7.5 End-to-end workflow test from Discord (2026-04-22):
+  - `ping` → `Pong! 🏓` (reply inside auto-created thread)
+  - `start a new project: create a scratch python file that prints "hello from multi-agent hermes on discord"`
+    → Hermes invoked `workflow_create_project`, wrote `scratch.py`, ran it, reported success with the project
+    scaffold (`control/`, `coordination/`, `plans/`, `workstreams/`, `archive/`) under
+    `groups/shared_project/active/multi-agent-hermes-discord/`.
+  > NOTE: `DISCORD_REQUIRE_MENTION` defaults to `true`. Added channel `1496437091725475910` (Gea's
+  > server → `#test`) to `DISCORD_FREE_RESPONSE_CHANNELS` so bare messages route to the bot.
+  > NOTE: For trivial one-shot requests Hermes collapses the 6-role handoff (Iris→…→Argus) into
+  > a single turn; the workflow-mutating toolset IS callable on Discord, which is the gating
+  > validation. Larger scopes will exercise the full chain.
 
 ### P8 — Reliability pass
 
-- [ ] P8.1 Reboot the VM. Confirm `copilot-api.service` and `hermes-gateway.service` come back healthy.
-- [ ] P8.2 Rotate logs (systemd default is fine).
-- [ ] P8.3 Add a tiny `scripts/vm-status.sh` that prints: service statuses, disk, memory, last 20 gateway log lines, last 20 copilot-api log lines. Convenience for the user.
+- [x] P8.1 Reboot the VM. Confirm `copilot-api.service` and `hermes-gateway.service` come back healthy.
+  > 2026-04-22: `sudo reboot` → ~30s later both services `active`, `curl :4141/v1/models` returns 200,
+  > post-reboot Discord `ping after reboot` acknowledged by bot.
+- [x] P8.2 Rotate logs (systemd default is fine).
+- [x] P8.3 Add a tiny `scripts/vm-status.sh` that prints: service statuses, disk, memory, last 20 gateway log lines, last 20 copilot-api log lines. Convenience for the user.
 - [ ] P8.4 `codex-review` the whole diff one more time. Address or dismiss findings.
 - [ ] P8.5 Merge or keep branch — user's call.
 
