@@ -260,7 +260,35 @@ ensure_uv() {
         UV_CMD="$HOME/.cargo/bin/uv"
     else
         log_info "Installing uv"
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        # Pin installer version + SHA256 so a compromised upstream can't
+        # silently rewrite our install step.  To bump: update URL, recompute
+        # SHA, update both defaults below.  Opt-outs (NOT recommended):
+        #   UV_INSTALL_SKIP_SHA=1  — skip checksum verification
+        #   UV_INSTALL_URL=...     — override URL (then also provide a SHA)
+        local uv_installer_url="${UV_INSTALL_URL:-https://astral.sh/uv/0.5.14/install.sh}"
+        local uv_installer_sha="${UV_INSTALL_SHA256:-c872e0484d02c0d19e524bd4b1f3ee0a8362b363a0793dce8d4fc34a32d42679}"
+        local tmp_installer
+        tmp_installer="$(mktemp -t uv-install.XXXXXX.sh)"
+        trap 'rm -f "$tmp_installer"' RETURN
+        if ! curl -fsSL "$uv_installer_url" -o "$tmp_installer"; then
+            log_error "Failed to download uv installer from $uv_installer_url"
+            exit 1
+        fi
+        if [ "${UV_INSTALL_SKIP_SHA:-0}" = "1" ]; then
+            log_warn "UV_INSTALL_SKIP_SHA=1 set — skipping installer checksum verification"
+        else
+            if [ -z "$uv_installer_sha" ]; then
+                log_error "No UV_INSTALL_SHA256 configured and UV_INSTALL_SKIP_SHA not set; refusing to run unverified installer"
+                exit 1
+            fi
+            local actual_sha
+            actual_sha="$(shasum -a 256 "$tmp_installer" | awk '{print $1}')"
+            if [ "$actual_sha" != "$uv_installer_sha" ]; then
+                log_error "uv installer SHA256 mismatch: got $actual_sha, expected $uv_installer_sha"
+                exit 1
+            fi
+        fi
+        sh "$tmp_installer"
         if [ -x "$HOME/.local/bin/uv" ]; then
             UV_CMD="$HOME/.local/bin/uv"
         elif [ -x "$HOME/.cargo/bin/uv" ]; then
@@ -317,11 +345,33 @@ ensure_checkout() {
                 git -C "$INSTALL_DIR" remote set-url origin "$effective_repo_url"
             fi
             git -C "$INSTALL_DIR" fetch --all --tags
+            # `pull --ff-only` failures mean the deployed tree won't match
+            # the requested remote state.  Default to fail-closed; set
+            # DEPLOY_STRICT_PULL=0 to tolerate failures (e.g. offline work
+            # or intentionally diverged local commits).
+            local pull_target_ref=""
             if [ -n "$BRANCH" ]; then
                 git -C "$INSTALL_DIR" checkout "$BRANCH"
-                git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || true
+                pull_target_ref="origin $BRANCH"
+                if ! git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"; then
+                    log_warn "git pull --ff-only origin $BRANCH failed (diverged or offline)"
+                    [ "${DEPLOY_STRICT_PULL:-1}" = "1" ] && exit 1
+                fi
             else
-                git -C "$INSTALL_DIR" pull --ff-only || true
+                # Resolve the current branch and pull from origin explicitly,
+                # so a reused checkout that tracks some non-origin upstream
+                # cannot silently deploy from the wrong remote.
+                local current_branch
+                current_branch="$(git -C "$INSTALL_DIR" branch --show-current 2>/dev/null || true)"
+                if [ -z "$current_branch" ]; then
+                    log_error "Could not determine current branch in $INSTALL_DIR (detached HEAD?); pass --branch explicitly"
+                    exit 1
+                fi
+                pull_target_ref="origin $current_branch"
+                if ! git -C "$INSTALL_DIR" pull --ff-only origin "$current_branch"; then
+                    log_warn "git pull --ff-only origin $current_branch failed (diverged or offline)"
+                    [ "${DEPLOY_STRICT_PULL:-1}" = "1" ] && exit 1
+                fi
             fi
         elif [ -e "$INSTALL_DIR" ]; then
             log_error "Install dir exists but is not a git checkout: $INSTALL_DIR"

@@ -454,6 +454,31 @@ class TestWorkflowApprovePlan:
         result = json.loads(workflow_approve_plan("Approve Test", ".."))
         assert "error" in result
 
+    def test_approve_rolls_back_when_batch_write_fails(self, projects_root):
+        """If the approval's file writes fail mid-way, neither
+        control/approved-plan.md nor plan-state.json should be left in
+        a partially-updated state."""
+        self._setup_project_with_plan(projects_root)
+        root = projects_root / "approve-test"
+        approved_path = root / "control" / "approved-plan.md"
+        state_path = root / "plans" / "my-plan" / "plan-state.json"
+        assert not approved_path.exists()
+        before_state_raw = read_json_file(state_path)
+
+        with patch.object(
+            workflow_tools_module,
+            "_atomic_write_many_text",
+            side_effect=OSError("disk full"),
+        ):
+            result = json.loads(workflow_approve_plan("Approve Test", "my-plan"))
+
+        assert "error" in result
+        assert not approved_path.exists(), (
+            "approved-plan.md must not be written when the batch write fails"
+        )
+        # plan-state.json should be unchanged (either still missing or unchanged shape).
+        assert read_json_file(state_path) == before_state_raw
+
     # --- Corrupted JSON (finding #3) ---
 
     def test_errors_on_corrupt_plan_state_json(self, projects_root):
@@ -2252,3 +2277,77 @@ class TestWorkflowReviewTask:
         assert read_json_file(state_path) == before_state
         assert not review_md_path.exists()
         assert not review_json_path.exists()
+
+    def test_review_sanitizes_task_id_in_artifact_filename(self, projects_root):
+        """A malicious task id (path separators, leading dots) must not cause
+        the review JSON artifact to land outside the stream's evidence/ dir."""
+        root = self._setup_with_task(projects_root)
+        stream_dir = root / "workstreams" / "backend"
+        ts_path = stream_dir / "task-state.json"
+
+        # Need enough `..` segments to escape `evidence/`.  The prefix
+        # `review-task-` absorbs one level so two `..` stays inside evidence;
+        # three `..` escapes up to the stream dir.
+        malicious_id = "../../../escape"
+        state = read_json_file(ts_path)
+        state["tasks"][0]["id"] = malicious_id
+        state["currentTask"] = malicious_id
+        write_json_file(ts_path, state)
+
+        result = json.loads(workflow_review_task(
+            "Review Test",
+            stream="backend",
+            task_id=malicious_id,
+            verdict="approved",
+            reviewer="argus",
+            summary="traversal attempt",
+        ))
+
+        evidence_dir = (stream_dir / "evidence").resolve()
+        escape_candidates = [
+            stream_dir / "escape-round-1.json",
+            stream_dir.parent / "escape-round-1.json",
+            root / "escape-round-1.json",
+        ]
+        for cand in escape_candidates:
+            assert not cand.exists(), f"review artifact escaped to {cand}"
+
+        # If the tool reported success, the file must be within evidence/.
+        if result.get("success"):
+            review_json_path = Path(result["review_json_path"]).resolve()
+            assert evidence_dir in review_json_path.parents, (
+                f"review artifact {review_json_path} not under {evidence_dir}"
+            )
+
+    def test_safe_task_id_is_collision_resistant(self):
+        """Sanitized task ids used in filenames must disambiguate distinct
+        inputs that would otherwise collide after character replacement or
+        truncation."""
+        from tools.workflow_tools import _safe_task_id_for_filename
+
+        # Pure decimal integer ids keep their original shape (common case).
+        assert _safe_task_id_for_filename("1") == "1"
+        assert _safe_task_id_for_filename(1) == "1"
+        assert _safe_task_id_for_filename("42") == "42"
+
+        # Non-digit ids get a hash suffix to resist case-insensitive FS
+        # collisions (APFS/NTFS) and post-sanitization collisions.
+        lower = _safe_task_id_for_filename("task-1")
+        upper = _safe_task_id_for_filename("TASK-1")
+        assert lower != upper, f"case-insensitive collision: {lower!r} == {upper!r}"
+
+        # Distinct tainted ids must not collapse to the same filename.
+        a = _safe_task_id_for_filename("a/b")
+        b = _safe_task_id_for_filename("a_b")
+        assert a != b, f"distinct ids collide: {a!r} == {b!r}"
+
+        # Long ids that differ only past the truncation boundary must differ.
+        long1 = "x" * 100 + "_one"
+        long2 = "x" * 100 + "_two"
+        assert _safe_task_id_for_filename(long1) != _safe_task_id_for_filename(long2)
+
+        # Final value must itself be safe (no path separators).
+        for val in ["a/b", "../../escape", "x" * 200, "\x00bad"]:
+            safe = _safe_task_id_for_filename(val)
+            assert "/" not in safe and "\\" not in safe and "\x00" not in safe
+            assert not safe.startswith(".")

@@ -24,6 +24,7 @@ Design:
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 import re
@@ -363,6 +364,34 @@ def _normalize_markdown_text(text: str, default_heading: str) -> str:
     if not stripped:
         stripped = f"# {default_heading}\n\nNone."
     return stripped + "\n"
+
+
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_task_id_for_filename(value) -> str:
+    """Render a task id into a safe filename component.
+
+    Task ids come from on-disk state that may be user-authored. Prevent
+    path separators, control chars, and leading dots from escaping the
+    containing directory when we build artifact filenames from them.
+
+    To avoid collisions after sanitization, truncation, or case-folding
+    (e.g. on macOS's default case-insensitive filesystem), any value
+    that isn't a pure decimal integer gets a short content-addressed
+    suffix derived from the raw value.
+    """
+    raw = "" if value is None else str(value)
+    sanitized = _FILENAME_SAFE_RE.sub("_", raw)
+    sanitized = sanitized.lstrip(".")
+    # Pure decimal integer ids (the common case) are already unique and
+    # case-insensitive-safe — keep their original shape for readable
+    # artifact filenames.
+    if sanitized and sanitized == raw and sanitized.isdigit():
+        return sanitized[:80]
+    truncated = sanitized[:60] if sanitized else "task"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+    return f"{truncated}-{digest}"
 
 
 def _sanitize_markdown_inline(text: str) -> str:
@@ -1198,17 +1227,24 @@ def workflow_approve_plan(
                 f"Allowed transitions from '{current_state}': {sorted(allowed) or 'none'}"
             )
 
-        # Copy plan to control/approved-plan.md.
+        # Copy plan to control/approved-plan.md and update plan-state.json
+        # as one best-effort atomic batch so a mid-write failure can't leave
+        # an approved-plan.md file paired with a stale (still-draft) state.
         plan_content = plan_file.read_text(encoding="utf-8")
         approved_path = root / "control" / "approved-plan.md"
-        write_text_file(approved_path, plan_content)
 
-        # Update plan-state.json.
         state["planSlug"] = plan_slug
         state["state"] = "approved"
         state["approvedAt"] = _now_iso()
         state["approvedFrom"] = plan_file.name
-        write_json_file(state_path, state)
+
+        try:
+            _atomic_write_many_text([
+                (approved_path, plan_content),
+                (state_path, _json_text(state)),
+            ])
+        except OSError as exc:
+            return tool_error(f"failed to approve plan: {exc}")
 
         return json.dumps({
             "success": True,
@@ -2448,7 +2484,8 @@ def workflow_review_task(
         raw_state["lastReviewedBy"] = reviewer
 
         evidence_dir = sdir / "evidence"
-        review_json_name = f"review-task-{task.get('id')}-round-{review_round}.json"
+        safe_tid = _safe_task_id_for_filename(task.get("id"))
+        review_json_name = f"review-task-{safe_tid}-round-{review_round}.json"
         review_json_path = evidence_dir / review_json_name
         review_json_relpath = f"workstreams/{stream}/evidence/{review_json_name}"
         review_md_path = sdir / "review-report.md"
@@ -2531,7 +2568,7 @@ def workflow_review_task(
 
 registry.register(
     name="workflow_save_plan",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_SAVE_PLAN_SCHEMA,
     handler=lambda args, **kw: workflow_save_plan(
         project_name=args.get("project_name", ""),
@@ -2549,7 +2586,7 @@ registry.register(
 
 registry.register(
     name="workflow_create_project",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_CREATE_PROJECT_SCHEMA,
     handler=lambda args, **kw: workflow_create_project(
         project_name=args.get("project_name", ""),
@@ -2561,7 +2598,7 @@ registry.register(
 
 registry.register(
     name="workflow_approve_plan",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_APPROVE_PLAN_SCHEMA,
     handler=lambda args, **kw: workflow_approve_plan(
         project_name=args.get("project_name", ""),
@@ -2574,7 +2611,7 @@ registry.register(
 
 registry.register(
     name="workflow_status",
-    toolset="workflow",
+    toolset="workflow-readonly",
     schema=WORKFLOW_STATUS_SCHEMA,
     handler=lambda args, **kw: workflow_status(
         project_name=args.get("project_name", ""),
@@ -2586,7 +2623,7 @@ registry.register(
 
 registry.register(
     name="workflow_decompose",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_DECOMPOSE_SCHEMA,
     handler=lambda args, **kw: workflow_decompose(
         project_name=args.get("project_name", ""),
@@ -2600,7 +2637,7 @@ registry.register(
 
 registry.register(
     name="workflow_handoff",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_HANDOFF_SCHEMA,
     handler=lambda args, **kw: workflow_handoff(
         project_name=args.get("project_name", ""),
@@ -2617,7 +2654,7 @@ registry.register(
 
 registry.register(
     name="workflow_checkpoint",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_CHECKPOINT_SCHEMA,
     handler=lambda args, **kw: workflow_checkpoint(
         project_name=args.get("project_name", ""),
@@ -2634,7 +2671,7 @@ registry.register(
 
 registry.register(
     name="workflow_sync_tasks",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_SYNC_TASKS_SCHEMA,
     handler=lambda args, **kw: workflow_sync_tasks(
         project_name=args.get("project_name", ""),
@@ -2648,7 +2685,7 @@ registry.register(
 
 registry.register(
     name="workflow_review_task",
-    toolset="workflow",
+    toolset="workflow-mutating",
     schema=WORKFLOW_REVIEW_TASK_SCHEMA,
     handler=lambda args, **kw: workflow_review_task(
         project_name=args.get("project_name", ""),

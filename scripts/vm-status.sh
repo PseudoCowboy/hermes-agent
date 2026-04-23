@@ -28,8 +28,13 @@ hr "copilot-api endpoints"
 # Single-port deploy: Anthropic-compat on :4141 only. (OpenAI-compat :4142 not
 # started in this setup — copilot-api's Anthropic endpoint serves both CLIs.)
 for port in 4141; do
-  code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/v1/models" || echo "err")
-  printf 'port %s  → %s\n' "$port" "$code"
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/v1/models")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'port %s  → err (curl rc=%d)\n' "$port" "$rc"
+  else
+    printf 'port %s  → %s\n' "$port" "$code"
+  fi
 done
 
 hr "last 20 gateway log lines"

@@ -176,3 +176,27 @@ class TestToolsetConsistency:
             "workflow_review_task",
         }:
             assert tool in tools
+
+
+class TestWorkflowToolsetRegistration:
+    """The registered `toolset` metadata for each workflow tool must match
+    the split in toolsets.py — otherwise parent-toolset derivation in
+    delegate_tool collapses workflow-readonly into the full-mutating set
+    (and vice versa)."""
+
+    def test_workflow_status_registered_as_readonly(self):
+        # Ensure tool modules are imported so the registry is populated.
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+
+        assert registry.get_toolset_for_tool("workflow_status") == "workflow-readonly"
+
+    def test_mutating_workflow_tools_registered_as_mutating(self):
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+        from toolsets import _HERMES_WORKFLOW_MUTATING_TOOLS
+
+        for tool in _HERMES_WORKFLOW_MUTATING_TOOLS:
+            assert registry.get_toolset_for_tool(tool) == "workflow-mutating", (
+                f"{tool} should be in the workflow-mutating toolset"
+            )
