@@ -102,16 +102,33 @@ VALID_REVIEW_VERDICTS = frozenset({"approved", "changes_requested"})
 # Path helpers
 # =============================================================================
 
-def _projects_root() -> Path:
+def _projects_root(scope_id: str | None = None) -> Path:
     """Return the absolute path to the active-projects root.
 
     Uses WORKFLOW_PROJECTS_ROOT env var if set, otherwise falls back to
     ``_DEFAULT_PROJECTS_ROOT`` resolved against the current working directory.
+
+    When *scope_id* is provided, the scope (sanitized via
+    ``_safe_task_id_for_filename``) is spliced between the project bundle
+    directory and the final segment — e.g. a base of
+    ``groups/shared_project/active`` with ``scope_id="1234567890"`` produces
+    ``groups/shared_project/1234567890/active``. This lets parallel projects
+    under different scopes share the same slug without colliding on disk,
+    in locks, or in staging directories. ``scope_id=None`` preserves the
+    pre-scope layout exactly (CLI back-compat).
     """
     override = os.environ.get("WORKFLOW_PROJECTS_ROOT")
     if override:
-        return Path(override).resolve()
-    return Path.cwd() / _DEFAULT_PROJECTS_ROOT
+        base = Path(override).resolve()
+    else:
+        base = Path.cwd() / _DEFAULT_PROJECTS_ROOT
+    # Normalize blank/whitespace scope_id to None so that integrations which
+    # serialize "no scope" as "" don't silently fork state off into a
+    # hashed-empty-string directory.
+    if scope_id is None or (isinstance(scope_id, str) and not scope_id.strip()):
+        return base
+    safe_scope = _safe_task_id_for_filename(scope_id)
+    return base.parent / safe_scope / base.name
 
 
 def slugify(name: str) -> str:
@@ -130,9 +147,9 @@ def slugify(name: str) -> str:
     return s
 
 
-def project_path(slug: str) -> Path:
-    """Return the absolute path for a given project slug."""
-    return _projects_root() / slug
+def project_path(slug: str, scope_id: str | None = None) -> Path:
+    """Return the absolute path for a given project slug under *scope_id*."""
+    return _projects_root(scope_id) / slug
 
 
 def _now_iso() -> str:
@@ -156,9 +173,13 @@ def _contained_child(parent: Path, child_name: str) -> Path | None:
     return resolved
 
 
-def _project_lock_path(slug: str) -> Path:
-    """Return the advisory lock path for a project slug."""
-    return _projects_root() / ".workflow-locks" / f"{slug}.lock"
+def _project_lock_path(slug: str, scope_id: str | None = None) -> Path:
+    """Return the advisory lock path for a project slug under *scope_id*.
+
+    Lock files live under the scoped projects root, so the same slug in two
+    different scopes never contends.
+    """
+    return _projects_root(scope_id) / ".workflow-locks" / f"{slug}.lock"
 
 
 def _project_staging_root(root: Path) -> Path:
@@ -167,18 +188,20 @@ def _project_staging_root(root: Path) -> Path:
 
 
 @contextmanager
-def _project_lock(slug: str):
-    """Serialize mutating workflow operations for one project.
+def _project_lock(slug: str, scope_id: str | None = None):
+    """Serialize mutating workflow operations for one (scope_id, slug) pair.
 
     Uses an advisory `flock` when available (macOS/Linux). On platforms without
     `fcntl`, this degrades to a no-op context manager while atomic writes still
-    prevent truncate-on-crash corruption.
+    prevent truncate-on-crash corruption. The effective lock key is
+    ``(scope_id, slug)`` — the same slug in two different scopes never
+    contends because the lock files live under different scoped roots.
     """
     if not slug:
         yield
         return
 
-    lock_path = _project_lock_path(slug)
+    lock_path = _project_lock_path(slug, scope_id)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as handle:
         if fcntl is not None:
@@ -889,6 +912,7 @@ def workflow_save_plan(
     questions_markdown: str | None = None,
     decision_log_markdown: str | None = None,
     task_id: str = None,
+    scope_id: str | None = None,
 ) -> str:
     """Persist a plan artifact and its durable planning state.
 
@@ -922,8 +946,8 @@ def workflow_save_plan(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
 
@@ -1041,11 +1065,16 @@ def workflow_save_plan(
 # Tool: workflow_create_project
 # =============================================================================
 
-def workflow_create_project(project_name: str, task_id: str = None) -> str:
+def workflow_create_project(project_name: str, task_id: str = None, scope_id: str | None = None) -> str:
     """Scaffold a new project directory with starter files.
 
     Creates the canonical directory structure and minimal starter files
     without overwriting any existing content.
+
+    When *scope_id* is provided the project is created under a scoped
+    root (e.g. ``groups/shared_project/<scope_id>/active/<slug>/``), so
+    the same slug in two different scopes never collides. Omit for the
+    default unscoped layout (back-compatible with existing callers).
     """
     if not project_name or not project_name.strip():
         return tool_error("project_name is required")
@@ -1054,8 +1083,8 @@ def workflow_create_project(project_name: str, task_id: str = None) -> str:
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
 
         # Create directory structure.
         created_dirs = []
@@ -1134,6 +1163,7 @@ def workflow_approve_plan(
     project_name: str,
     plan_slug: str | None = None,
     task_id: str = None,
+    scope_id: str | None = None,
 ) -> str:
     """Approve a plan: copy the latest plan artifact into control/approved-plan.md
     and update the plan-state.json.
@@ -1148,8 +1178,8 @@ def workflow_approve_plan(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
 
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
@@ -1260,7 +1290,7 @@ def workflow_approve_plan(
 # Tool: workflow_status
 # =============================================================================
 
-def workflow_status(project_name: str, task_id: str = None) -> str:
+def workflow_status(project_name: str, task_id: str = None, scope_id: str | None = None) -> str:
     """Summarise file-backed project status.
 
     Reads control/, plans/, workstreams/, and coordination/ to produce
@@ -1273,7 +1303,7 @@ def workflow_status(project_name: str, task_id: str = None) -> str:
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    root = project_path(slug)
+    root = project_path(slug, scope_id)
 
     if not root.is_dir():
         return tool_error(f"Project '{slug}' does not exist at {root}")
@@ -1427,6 +1457,10 @@ WORKFLOW_CREATE_PROJECT_SCHEMA = {
                 "type": "string",
                 "description": "Human-readable project name (e.g. 'Billing Rewrite'). Will be slugified for the directory name.",
             },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
+            },
         },
         "required": ["project_name"],
     },
@@ -1474,6 +1508,10 @@ WORKFLOW_SAVE_PLAN_SCHEMA = {
                 "type": "string",
                 "description": "Optional markdown content for plans/<plan-slug>/decision-log.md.",
             },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
+            },
         },
         "required": ["project_name", "plan_slug", "plan_markdown"],
     },
@@ -1499,6 +1537,10 @@ WORKFLOW_APPROVE_PLAN_SCHEMA = {
             "plan_slug": {
                 "type": "string",
                 "description": "Plan directory name under plans/. Omit to auto-discover if only one plan exists.",
+            },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
             },
         },
         "required": ["project_name"],
@@ -1543,6 +1585,10 @@ WORKFLOW_DECOMPOSE_SCHEMA = {
                     "required": ["name", "owner", "completionMode", "acceptanceCriteria"],
                 },
             },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
+            },
         },
         "required": ["project_name", "streams"],
     },
@@ -1569,6 +1615,10 @@ WORKFLOW_HANDOFF_SCHEMA = {
             "artifact_path": {
                 "type": "string",
                 "description": "Optional repo-relative path to an artifact.",
+            },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
             },
         },
         "required": ["project_name", "from_stream", "to_stream", "description"],
@@ -1606,6 +1656,10 @@ WORKFLOW_CHECKPOINT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional list of repo-relative evidence paths to append to the task.",
             },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
+            },
         },
         "required": ["project_name", "stream", "note"],
     },
@@ -1627,6 +1681,10 @@ WORKFLOW_SYNC_TASKS_SCHEMA = {
             "overwrite": {
                 "type": "boolean",
                 "description": "Set true to replace an existing non-empty task-state.json from tasks.md.",
+            },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
             },
         },
         "required": ["project_name", "stream"],
@@ -1679,6 +1737,10 @@ WORKFLOW_REVIEW_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional repo-relative evidence paths to attach to the task and review report.",
             },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
+            },
         },
         "required": ["project_name", "stream", "task_id", "verdict", "reviewer", "summary"],
     },
@@ -1698,6 +1760,10 @@ WORKFLOW_STATUS_SCHEMA = {
             "project_name": {
                 "type": "string",
                 "description": "Project name or slug.",
+            },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (e.g. a Discord category ID) that isolates same-slug projects. Omit for the default unscoped layout.",
             },
         },
         "required": ["project_name"],
@@ -1819,6 +1885,7 @@ def workflow_decompose(
     streams=None,
     plan_slug: str | None = None,
     task_id: str = None,
+    scope_id: str | None = None,
 ) -> str:
     """Decompose an approved plan into workstreams.
 
@@ -1832,8 +1899,8 @@ def workflow_decompose(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
 
@@ -2023,6 +2090,7 @@ def workflow_handoff(
     status: str = "pending",
     artifact_path: str | None = None,
     task_id: str = None,
+    scope_id: str | None = None,
 ) -> str:
     """Record a handoff between two workstreams (writes to both streams)."""
     if not project_name or not project_name.strip():
@@ -2032,8 +2100,8 @@ def workflow_handoff(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
 
@@ -2111,6 +2179,7 @@ def workflow_checkpoint(
     new_status: str | None = None,
     actor: str | None = None,
     evidence=None,
+    scope_id: str | None = None,
 ) -> str:
     """Record progress on a stream; optionally transition a task's status.
 
@@ -2137,8 +2206,8 @@ def workflow_checkpoint(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
 
@@ -2225,6 +2294,7 @@ def workflow_sync_tasks(
     stream: str = "",
     overwrite: bool = False,
     task_id: str = None,
+    scope_id: str | None = None,
 ) -> str:
     """Seed or resync ``task-state.json`` from checkbox tasks in ``tasks.md``."""
     if not project_name or not project_name.strip():
@@ -2238,8 +2308,8 @@ def workflow_sync_tasks(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
 
@@ -2375,6 +2445,7 @@ def workflow_review_task(
     behavior_coverage=None,
     missing_evidence=None,
     evidence=None,
+    scope_id: str | None = None,
 ) -> str:
     """Persist a durable review report and update task state honestly."""
     if not project_name or not project_name.strip():
@@ -2415,8 +2486,8 @@ def workflow_review_task(
     if not slug:
         return tool_error(f"Could not derive a valid slug from '{project_name}'")
 
-    with _project_lock(slug):
-        root = project_path(slug)
+    with _project_lock(slug, scope_id):
+        root = project_path(slug, scope_id)
         if not root.is_dir():
             return tool_error(f"Project '{slug}' does not exist at {root}")
 
@@ -2579,6 +2650,7 @@ registry.register(
         questions_markdown=args.get("questions_markdown"),
         decision_log_markdown=args.get("decision_log_markdown"),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="🗂️",
@@ -2591,6 +2663,7 @@ registry.register(
     handler=lambda args, **kw: workflow_create_project(
         project_name=args.get("project_name", ""),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="📁",
@@ -2604,6 +2677,7 @@ registry.register(
         project_name=args.get("project_name", ""),
         plan_slug=args.get("plan_slug"),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="✅",
@@ -2616,6 +2690,7 @@ registry.register(
     handler=lambda args, **kw: workflow_status(
         project_name=args.get("project_name", ""),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="📊",
@@ -2630,6 +2705,7 @@ registry.register(
         streams=args.get("streams"),
         plan_slug=args.get("plan_slug"),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="🧩",
@@ -2647,6 +2723,7 @@ registry.register(
         status=args.get("status", "pending"),
         artifact_path=args.get("artifact_path"),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="🤝",
@@ -2664,6 +2741,7 @@ registry.register(
         new_status=args.get("new_status"),
         actor=args.get("actor"),
         evidence=args.get("evidence"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="📝",
@@ -2678,6 +2756,7 @@ registry.register(
         stream=args.get("stream", ""),
         overwrite=args.get("overwrite", False),
         task_id=kw.get("task_id"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="☑️",
@@ -2698,6 +2777,7 @@ registry.register(
         behavior_coverage=args.get("behavior_coverage"),
         missing_evidence=args.get("missing_evidence"),
         evidence=args.get("evidence"),
+        scope_id=args.get("scope_id"),
     ),
     check_fn=check_workflow_requirements,
     emoji="🔍",

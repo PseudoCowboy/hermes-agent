@@ -2351,3 +2351,126 @@ class TestWorkflowReviewTask:
             safe = _safe_task_id_for_filename(val)
             assert "/" not in safe and "\\" not in safe and "\x00" not in safe
             assert not safe.startswith(".")
+
+
+# =========================================================================
+# P1: scope_id isolation
+# =========================================================================
+
+class TestScopeIdIsolation:
+    """Two projects sharing the same slug but different scope_id must not collide."""
+
+    def test_project_path_splices_scope_between_bundle_and_active(self, projects_root):
+        # projects_root fixture sets WORKFLOW_PROJECTS_ROOT to ``.../projects``.
+        unscoped = project_path("demo")
+        scoped = project_path("demo", scope_id="123456")
+        assert unscoped == projects_root / "demo"
+        # Scope splices between the bundle dir and the "active"/final segment.
+        assert scoped.parent.parent.name == "123456"
+        assert scoped.parent.name == projects_root.name  # "projects"
+        assert scoped.name == "demo"
+        assert unscoped != scoped
+
+    def test_create_same_slug_in_two_scopes_does_not_collide(self, projects_root):
+        r1 = json.loads(workflow_create_project("Alpha", scope_id="scope-a"))
+        r2 = json.loads(workflow_create_project("Alpha", scope_id="scope-b"))
+        assert r1["success"] is True
+        assert r2["success"] is True
+        p_a = project_path("alpha", scope_id="scope-a")
+        p_b = project_path("alpha", scope_id="scope-b")
+        assert p_a.is_dir()
+        assert p_b.is_dir()
+        assert p_a != p_b
+
+    def test_unscoped_project_independent_of_scoped(self, projects_root):
+        r1 = json.loads(workflow_create_project("Beta"))
+        r2 = json.loads(workflow_create_project("Beta", scope_id="scope-x"))
+        assert r1["success"] is True
+        assert r2["success"] is True
+        unscoped = project_path("beta")
+        scoped = project_path("beta", scope_id="scope-x")
+        assert unscoped.is_dir()
+        assert scoped.is_dir()
+        assert unscoped != scoped
+
+    def test_status_only_sees_own_scope(self, projects_root):
+        workflow_create_project("Gamma", scope_id="scope-1")
+        # Same slug under a different scope must not be visible.
+        r = json.loads(workflow_status("Gamma", scope_id="scope-2"))
+        assert "error" in r
+        assert "does not exist" in r["error"].lower()
+
+    def test_lock_key_tuples_scope_and_slug(self, projects_root, monkeypatch):
+        monkeypatch.setattr(workflow_tools_module, "fcntl", None)
+        with workflow_tools_module._project_lock("same-slug", scope_id="s1"):
+            lock_a = workflow_tools_module._project_lock_path("same-slug", "s1")
+            lock_b = workflow_tools_module._project_lock_path("same-slug", "s2")
+            assert lock_a.is_file()
+            assert lock_a != lock_b
+
+    def test_scope_id_sanitized_in_path(self, projects_root):
+        # Path-unsafe scope ids must not escape the bundle root.
+        p = project_path("delta", scope_id="../../etc")
+        # The sanitized scope segment must be entirely under the bundle root.
+        bundle_root = projects_root.parent  # parent of ".../projects"
+        try:
+            p.relative_to(bundle_root)
+        except ValueError:
+            pytest.fail(f"sanitized scope path escaped bundle root: {p}")
+        # Sanitized segment must not be a literal parent-traversal component.
+        scope_segment = p.parent.parent.name
+        assert scope_segment not in ("..", ".")
+        assert "/" not in scope_segment and "\\" not in scope_segment
+
+    def test_save_plan_in_scope(self, projects_root):
+        workflow_create_project("Epsilon", scope_id="sc")
+        r = json.loads(
+            workflow_save_plan(
+                "Epsilon",
+                "auth",
+                "# Plan\n",
+                scope_id="sc",
+            )
+        )
+        assert r["success"] is True
+        assert (project_path("epsilon", scope_id="sc") / "plans" / "auth" / "plan.md").is_file()
+        # Same slug without scope must NOT have the plan file.
+        assert not (projects_root / "epsilon").exists()
+
+    def test_blank_scope_id_normalized_to_unscoped(self, projects_root):
+        # Callers that serialize "no scope" as "" must land on the legacy
+        # unscoped layout, not on a hashed-empty-string fork.
+        assert project_path("zeta") == project_path("zeta", scope_id="")
+        assert project_path("zeta") == project_path("zeta", scope_id="   ")
+
+    def test_registry_handlers_forward_scope_id(self, projects_root):
+        # Regression: the registry dispatch path must forward scope_id from
+        # args, not drop it. Exercises the registered handlers for
+        # workflow_create_project and workflow_status.
+        from tools.workflow_tools import registry
+
+        r_create = json.loads(
+            registry.dispatch(
+                "workflow_create_project",
+                {"project_name": "Registry Scope", "scope_id": "sc-r"},
+            )
+        )
+        assert r_create["success"] is True
+        assert project_path("registry-scope", scope_id="sc-r").is_dir()
+
+        # Same slug via the unscoped registry handler must NOT see the scoped one.
+        r_status = json.loads(
+            registry.dispatch(
+                "workflow_status", {"project_name": "Registry Scope"}
+            )
+        )
+        assert "error" in r_status and "does not exist" in r_status["error"].lower()
+
+        # And scoped status sees it.
+        r_status_scoped = json.loads(
+            registry.dispatch(
+                "workflow_status",
+                {"project_name": "Registry Scope", "scope_id": "sc-r"},
+            )
+        )
+        assert "error" not in r_status_scoped
