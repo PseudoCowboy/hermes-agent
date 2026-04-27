@@ -19,7 +19,8 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,18 @@ class ToolDispatchContext:
     # deleted project; checking this in dispatch lets the registry refuse
     # the call cleanly with a "session closed" error instead.
     closed_check: Optional[Callable[[], bool]] = field(default=None, compare=False)
+    # Per-stream worktree root (P7a-2).  When set, the implementer worker
+    # has bound its session to a git worktree on disk; tool handlers may
+    # consult this for cwd discipline.  Auto-bound into args only via the
+    # ``sandbox`` mechanism below — there is no ``worktree_root`` in
+    # ``_AUTO_BIND_KEYS`` because no tool schema declares it.
+    worktree_root: Optional[Path] = None
+    # Per-stream :class:`tools.sandboxed_toolset.SandboxedToolset` (P7a-2).
+    # When non-None and the tool name is in the sandbox's allowlist, the
+    # registry forwards the call through the sandbox (which validates path
+    # args and forces a workdir) before reaching the handler.  Typed
+    # ``Any`` to avoid an import cycle with ``tools.sandboxed_toolset``.
+    sandbox: Optional[Any] = field(default=None, compare=False)
 
 
 # Tool-arg keys that auto-bind from context when the arg is missing or
@@ -115,6 +128,27 @@ def unregister_auto_bind_toolset(toolset: str) -> None:
 _dispatch_context_var: "ContextVar[Optional[ToolDispatchContext]]" = ContextVar(
     "hermes_tool_dispatch_context", default=None
 )
+
+
+# Recursion guard for the sandbox interception (P7a-2).  When
+# ``SandboxedToolset.dispatch`` validates args and then calls back into
+# ``ToolRegistry.dispatch`` to actually execute the handler, we must NOT
+# re-enter the sandbox or we'd loop forever.  The sandbox sets this flag
+# for the duration of its inner dispatch call; ``dispatch`` checks it
+# before doing the sandbox handoff.
+_sandbox_pass_through: "ContextVar[bool]" = ContextVar(
+    "hermes_tool_sandbox_pass_through", default=False
+)
+
+
+@contextmanager
+def _sandbox_pass_through_scope():
+    """Mark the current dispatch as a sandbox pass-through (skip re-interception)."""
+    token = _sandbox_pass_through.set(True)
+    try:
+        yield
+    finally:
+        _sandbox_pass_through.reset(token)
 
 
 @contextmanager
@@ -268,6 +302,11 @@ class ToolRegistry:
           for ``scope_id`` / ``slug`` / ``stream_name`` in ``args``
           are filled in from the context.  Caller-supplied args always
           win — auto-binding only fills holes, it never overrides.
+        * If the dispatch context carries a ``sandbox``
+          (:class:`tools.sandboxed_toolset.SandboxedToolset`) and the
+          tool is in its allowlist, the call is forwarded through the
+          sandbox so paths get validated and ``workdir`` is forced into
+          the per-stream worktree (P7a-2).
         """
         entry = self._tools.get(name)
         if not entry:
@@ -337,6 +376,45 @@ class ToolRegistry:
                         ctx_val = getattr(ctx, key, None)
                         if ctx_val:
                             args[key] = ctx_val
+            # Sandbox interception (P7a-2).  If the implementer worker
+            # bound a SandboxedToolset on the context, route any tool the
+            # sandbox claims through it.  The sandbox validates path args
+            # + forces workdir, then calls back into ``dispatch`` to
+            # execute the handler — the recursion guard below short-
+            # circuits that re-entry so the sandbox runs exactly once.
+            #
+            # Tools NOT in the sandbox allowlist fall through to normal
+            # dispatch.  ``enforce_allowlist=True`` (default) makes the
+            # sandbox refuse unknown allowlisted tools at validate-time;
+            # we don't second-guess that here.
+            if not _sandbox_pass_through.get():
+                sandbox = getattr(ctx, "sandbox", None)
+                if sandbox is not None and getattr(sandbox, "is_allowed", None) is not None:
+                    try:
+                        if sandbox.is_allowed(name):
+                            with _sandbox_pass_through_scope():
+                                return sandbox.dispatch(name, args, **kwargs)
+                    except Exception as exc:
+                        # P7a-2 codex review (Important #3): fail CLOSED
+                        # on a broken sandbox. The sandbox's job is to
+                        # pin path/workdir args to the per-stream
+                        # worktree; if it's malfunctioning we cannot
+                        # know whether the call would have been rewritten,
+                        # so dispatching the original handler with the
+                        # raw (potentially escaping) args risks the very
+                        # write-outside-worktree bug the sandbox is meant
+                        # to prevent. Surface a structured error instead.
+                        logger.exception(
+                            "sandbox dispatch raised for %s; refusing to "
+                            "execute handler unsandboxed: %s",
+                            name, exc,
+                        )
+                        return json.dumps({
+                            "error": (
+                                f"sandbox error for tool {name!r}: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                        })
         try:
             if entry.is_async:
                 from model_tools import _run_async

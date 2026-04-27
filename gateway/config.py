@@ -251,6 +251,69 @@ class StreamingConfig:
 
 
 @dataclass
+class ModelRouteConfig:
+    """Model routing for one persona role (P7a-2).
+
+    Used by ``GatewayRunner._resolve_implementer_agent_config(role)`` to
+    pick the upstream provider/model for a frontend or backend
+    implementer agent. All fields optional — absent values fall back to
+    the runner's global model + fallback.
+    """
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    fallback_model: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.provider:
+            out["provider"] = self.provider
+        if self.model:
+            out["model"] = self.model
+        if self.fallback_model:
+            out["fallback_model"] = self.fallback_model
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ModelRouteConfig":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            provider=data.get("provider"),
+            model=data.get("model"),
+            fallback_model=data.get("fallback_model"),
+        )
+
+
+@dataclass
+class ImplementerConfig:
+    """P7a-2 implementer-agent config block.
+
+    Currently only carries per-role model routing. Optional everywhere —
+    when no roles are configured the implementer worker falls back to
+    the runner's global model + fallback.
+    """
+    models: Dict[str, ModelRouteConfig] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "models": {role: cfg.to_dict() for role, cfg in self.models.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ImplementerConfig":
+        if not isinstance(data, dict):
+            return cls()
+        models_block = data.get("models")
+        models: Dict[str, ModelRouteConfig] = {}
+        if isinstance(models_block, dict):
+            for role, route in models_block.items():
+                if not isinstance(role, str):
+                    continue
+                models[role] = ModelRouteConfig.from_dict(route)
+        return cls(models=models)
+
+
+@dataclass
 class GatewayConfig:
     """
     Main gateway configuration.
@@ -289,6 +352,9 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
+    # P7a-2: per-role model routing for implementer agents.
+    implementer: ImplementerConfig = field(default_factory=ImplementerConfig)
 
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
@@ -376,6 +442,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "implementer": self.implementer.to_dict(),
         }
     
     @classmethod
@@ -437,6 +504,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            implementer=ImplementerConfig.from_dict(data.get("implementer", {})),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -516,6 +584,19 @@ def load_gateway_config() -> GatewayConfig:
             streaming_cfg = yaml_cfg.get("streaming")
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
+
+            # P7a-2: implementer block can live either at the top level
+            # (``implementer:``) or nested under ``gateway:`` for parity
+            # with the rest of this file's bridging.  Both forms supported.
+            impl_cfg = yaml_cfg.get("implementer")
+            if not isinstance(impl_cfg, dict):
+                gateway_block = yaml_cfg.get("gateway")
+                if isinstance(gateway_block, dict):
+                    nested = gateway_block.get("implementer")
+                    if isinstance(nested, dict):
+                        impl_cfg = nested
+            if isinstance(impl_cfg, dict):
+                gw_data["implementer"] = impl_cfg
 
             if "reset_triggers" in yaml_cfg:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]

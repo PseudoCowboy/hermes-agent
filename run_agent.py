@@ -23,6 +23,7 @@ Usage:
 import asyncio
 import base64
 import concurrent.futures
+import contextvars
 import copy
 import hashlib
 import json
@@ -6302,9 +6303,19 @@ class AIAgent:
         try:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # P7a-2: snapshot the *calling* context (which carries the
+                # implementer worker's ToolDispatchContext + sandbox + the
+                # closed_check ContextVar) so each worker thread sees the
+                # same ambient binding.  Without this, ContextVars do NOT
+                # propagate into ThreadPoolExecutor — the registry would
+                # see ``_dispatch_context_var.get() is None`` and bypass
+                # both the sandbox path validation and the per-session
+                # closed_check.  ``Context.run`` cannot be called
+                # concurrently on the same Context, so copy per-future.
                 futures = []
                 for i, (tc, name, args) in enumerate(parsed_calls):
-                    f = executor.submit(_run_tool, i, tc, name, args)
+                    ambient_ctx = contextvars.copy_context()
+                    f = executor.submit(ambient_ctx.run, _run_tool, i, tc, name, args)
                     futures.append(f)
 
                 # Wait for all to complete (exceptions are captured inside _run_tool)

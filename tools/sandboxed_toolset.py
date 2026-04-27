@@ -22,7 +22,7 @@ layer stays above dispatch without editing any individual tool's code:
 Tool arguments inspected for paths (case-sensitive, matching the
 registered schemas in this repo):
 
-- ``path``       — read_file / write_file / search_files / edit_file
+- ``path``       — read_file / write_file / search_files / patch
 - ``file_path``  — anything following the global convention
 - ``workdir``    — terminal tool
 
@@ -74,12 +74,20 @@ class SandboxedToolset:
         If True, terminal-style tools get ``workdir`` rewritten to the
         sandbox root whenever the caller omits it (mistake resistance).
         Set False only for tests that want to observe the raw rejection.
+    enforce_allowlist:
+        If True (default), :meth:`validate_args` refuses any tool name
+        not in :attr:`allowed_tools` — the sandbox is the single point
+        of truth for which tools an implementer can call. If False,
+        unknown names skip the allowlist check but still go through the
+        path validation; intended for tests that want to inspect path
+        rejection without first registering the tool.
     """
 
     root: Path
     registry: Any
     allowed_tools: Set[str] = field(default_factory=set)
     force_workdir: bool = True
+    enforce_allowlist: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.root, Path):
@@ -148,7 +156,7 @@ class SandboxedToolset:
         We therefore replace each path arg with the canonical resolved
         absolute path so the downstream tool sees what the sandbox saw.
         """
-        if name not in self.allowed_tools:
+        if self.enforce_allowlist and name not in self.allowed_tools:
             raise SandboxViolation(
                 f"tool {name!r} is not in this sandbox allowlist"
             )
@@ -201,11 +209,15 @@ def build_stream_sandbox(
 ) -> SandboxedToolset:
     """Construct a sandbox suitable for a per-stream implementer session.
 
-    Allowlist defaults to the read/write/edit/search/terminal set the
-    design §10 calls out (``read``/``write``/``edit``/``bash``/
-    ``terminal``/``glob``/``grep`` — reconciled below against the names
-    actually registered in this repo). Callers can pass extra tool
-    names they want routed through the same path-allowlist.
+    The default allowlist covers the read/write/patch/search/terminal
+    tools an implementer needs to do code work inside its worktree.
+    Names match what is actually registered in this repo
+    (``read_file``/``write_file``/``patch``/``search_files``/
+    ``terminal``); see :data:`tools.file_tools` and
+    :data:`tools.terminal_tool`. Callers can pass extra tool names they
+    want routed through the same path-allowlist via *extra_tools* (e.g.
+    workflow / discord posting tools whose args do NOT carry paths but
+    which the implementer worker still wants to be the sole gate for).
     """
     # These names are the ones registered today (tools/file_tools.py,
     # tools/terminal_tool.py). Additional tool names should be added
@@ -214,7 +226,7 @@ def build_stream_sandbox(
     default_tools = {
         "read_file",
         "write_file",
-        "edit_file",
+        "patch",
         "search_files",
         "terminal",
     }

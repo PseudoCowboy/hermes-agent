@@ -1023,6 +1023,103 @@ class GatewayRunner:
         }
         return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
+    def _resolve_implementer_agent_config(self, role: str) -> dict:
+        """Return agent kwargs for an implementer of the given ``role``.
+
+        P7a-2 routes frontend vs backend implementers to different
+        upstream providers via the optional
+        ``gateway.implementer.models.<role>`` config block. When the
+        block is absent or omits a field, the runner's global model +
+        fallback (resolved from ``~/.hermes/config.yaml`` and the
+        runtime provider) are used so deployments without the new
+        config keep working unchanged.
+
+        Returns a dict shaped for ``run_agent.AIAgent`` kwargs:
+        ``{model, provider, base_url, api_key, api_mode, fallback_model}``.
+
+        Unlike :meth:`_resolve_turn_agent_config`, this routing is
+        explicitly *role-based*, not user-message-heuristic: the
+        implementer persona is fixed at session-construction time and
+        the upstream model decision must not flip mid-conversation.
+        """
+        # Lazy imports to avoid widening this module's import surface.
+        from hermes_cli import auth as _auth
+
+        impl_cfg = getattr(self.config, "implementer", None)
+        models_block = getattr(impl_cfg, "models", {}) if impl_cfg else {}
+        route = models_block.get(role) if isinstance(models_block, dict) else None
+
+        # Global fallbacks: the same source the rest of the runner uses
+        # for ad-hoc AIAgent construction (memory flush, /compress).
+        global_runtime = _resolve_runtime_agent_kwargs()
+        global_model = _resolve_gateway_model()
+        global_fallback = getattr(self, "_fallback_model", None)
+
+        if route is None:
+            return {
+                "model": global_model,
+                "provider": global_runtime.get("provider"),
+                "base_url": global_runtime.get("base_url"),
+                "api_key": global_runtime.get("api_key"),
+                "api_mode": global_runtime.get("api_mode"),
+                "fallback_model": global_fallback,
+            }
+
+        provider_id = route.provider or global_runtime.get("provider")
+        # Did the operator explicitly name a provider in the role block?
+        # If yes, that provider's credentials are the ONLY credentials we
+        # may use — falling back to the global creds would cross-pollute
+        # one provider's API key into another provider's endpoint, which
+        # both fails the auth and (worse) leaks the key over a TLS session
+        # to the wrong vendor. P7a-2 codex review (Important #7).
+        provider_explicit = bool(route.provider)
+        model = route.model or global_model
+        fallback = (
+            route.fallback_model if route.fallback_model is not None else global_fallback
+        )
+
+        # Resolve provider credentials/base_url from the auth registry
+        # when a provider is named.  We don't require a configured
+        # credential here — AIAgent itself will surface the missing-key
+        # error if the env vars aren't set, with a more actionable
+        # message than we could produce here.
+        api_key: Optional[str] = None
+        base_url: Optional[str] = None
+        if provider_id:
+            provider_cfg = getattr(_auth, "PROVIDER_REGISTRY", {}).get(provider_id)
+            if provider_cfg is not None:
+                base_url = provider_cfg.inference_base_url or None
+                if provider_cfg.base_url_env_var:
+                    env_url = os.getenv(provider_cfg.base_url_env_var)
+                    if env_url:
+                        base_url = env_url
+                for env_var in provider_cfg.api_key_env_vars:
+                    val = os.getenv(env_var)
+                    if val:
+                        api_key = val
+                        break
+
+        # Fall back to the runner's own runtime kwargs ONLY when the
+        # provider was inherited from globals (i.e. the role didn't
+        # explicitly name one). When the role names a different provider
+        # we leave api_key/base_url ``None`` so the wrong creds can't be
+        # forwarded, and AIAgent surfaces a clear missing-credential
+        # error pointing at the configured provider's env vars.
+        if not provider_explicit:
+            if api_key is None:
+                api_key = global_runtime.get("api_key")
+            if base_url is None:
+                base_url = global_runtime.get("base_url")
+
+        return {
+            "model": model,
+            "provider": provider_id,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_mode": global_runtime.get("api_mode"),
+            "fallback_model": fallback,
+        }
+
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
 

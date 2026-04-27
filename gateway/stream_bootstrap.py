@@ -13,10 +13,10 @@ For each stream declared in the workstream manifest, we:
    Discord category.
 4. Suppress Discord auto-thread for that channel.
 5. Build a per-stream :class:`gateway.session_router.LongLivedSession`
-   keyed by the new channel, persona ``IMPLEMENTER``.
+   keyed by the new channel, persona ``IMPLEMENTER_FRONTEND`` or
+   ``IMPLEMENTER_BACKEND`` (selected by ``role_to_persona(role)``).
 6. Write the per-stream ``runstate.json`` (status="awaiting-first-turn").
-7. Spawn a *stub* implementer worker (P7a-1).  P7a-2 swaps the body
-   for the real ``AIAgent.run_conversation`` driver.
+7. Spawn the real implementer worker (P7a-2 — replaced the P7a-1 stub).
 
 Failure handling: any failure during step N rolls back streams 0..N-1
 in reverse (cancel worker → unregister session → discard from
@@ -37,8 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from gateway.implementer_worker import implementer_stub_worker
-from gateway.personas import IMPLEMENTER
+from gateway.implementer_worker import implementer_worker
+from gateway.personas import role_to_persona
 from gateway.platforms.discord_orchestration import (
     OrchestrationError,
     create_stream_channel,
@@ -249,7 +249,7 @@ async def bootstrap_streams_for_project(
     adapter: Any,
     guild_id: str,
 ) -> StreamBootstrapResult:
-    """Materialise stream channels + worktrees + stub workers.
+    """Materialise stream channels + worktrees + implementer workers.
 
     Acquires ``runner.merge_lock_for(scope_id, slug)`` for the entire
     transaction.  On failure, rolls back every stream created so far
@@ -377,7 +377,7 @@ async def _bootstrap_under_lock(
                     scope_id=scope_id,
                     bot_user_id=getattr(adapter, "bot_user_id", None),
                 )
-                session.persona = IMPLEMENTER
+                session.persona = role_to_persona(role)
                 session.slug = slug
                 session.main_channel_id = channel_id  # the stream's own channel
                 session.stream_name = stream_name
@@ -402,12 +402,12 @@ async def _bootstrap_under_lock(
                         slug, stream_name, exc_info=True,
                     )
 
-                # Step 6: spawn the stub worker.
+                # Step 6: spawn the implementer worker.
                 worker_task = asyncio.create_task(
-                    implementer_stub_worker(
+                    implementer_worker(
                         session, runner=runner, adapter=adapter
                     ),
-                    name=f"impl-stub:{session_key}",
+                    name=f"impl:{session_key}",
                 )
                 session._in_flight = worker_task
 
@@ -535,17 +535,11 @@ def _format_summary_message(streams: List[StreamBootstrapEntry]) -> str:
     """Compose the main-channel summary post.
 
     Lists each new stream channel as a Discord channel mention so the
-    operator can click through.  The "implementer not yet wired" note
-    is important — without it the operator would expect the stub workers
-    to actually do work in P7a-1.
+    operator can click through.
     """
     if not streams:
         return "✓ Plan approved — no streams to bootstrap."
     lines = ["✓ Plan approved — streams ready:"]
     for s in streams:
         lines.append(f"• `{s.stream_name}` ({s.role}) → <#{s.channel_id}>")
-    lines.append(
-        "_Implementer agents are not yet wired (P7a-1 stubs only). "
-        "Real agents land in the next phase._"
-    )
     return "\n".join(lines)

@@ -68,6 +68,11 @@ _VALID_STREAM_STATUSES = frozenset({
     "merged",
     "merge-conflict",
     "changes-requested",
+    # P7a-2: implementer_worker marks the per-stream runstate "error"
+    # when the persona prompt fails to load or a per-turn exception
+    # bubbles past run_conversation. Treated as a recoverable terminal
+    # state — the operator decides whether to retry or abandon.
+    "error",
 })
 
 _VALID_PROJECT_PHASES = frozenset({

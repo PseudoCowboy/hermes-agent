@@ -259,9 +259,14 @@ async def test_bootstrap_happy_path_creates_two_streams(
     sessions = list(runner._session_router._sessions.values())
     assert len(sessions) == 2
     for sess in sessions:
-        assert sess.persona == "implementer"
+        # P7a-2: persona is now per-role (implementer_frontend /
+        # implementer_backend), set via role_to_persona() in
+        # stream_bootstrap.  P7a-1 stub used a single "implementer".
+        assert sess.persona in {"implementer_frontend", "implementer_backend"}
         assert sess.stream_name in {"frontend", "backend"}
         assert sess.role in {"frontend", "backend"}
+        # Frontend role → frontend persona; backend role → backend persona.
+        assert sess.persona == f"implementer_{sess.role}"
         assert sess.worktree_root is not None
         # Worktree dir actually exists on disk.
         assert sess.worktree_root.is_dir()

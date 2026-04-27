@@ -26,10 +26,44 @@ from typing import Dict
 # round-trip cleanly through dataclass attributes, JSON, and SQLite if
 # we ever persist them.
 ORCHESTRATOR = "orchestrator"
-IMPLEMENTER = "implementer"  # P7
-TEST_AGENT = "test_agent"  # P7
+IMPLEMENTER = "implementer"  # generic id, kept for back-compat (stub uses it)
+IMPLEMENTER_FRONTEND = "implementer_frontend"  # P7a-2: role-specific persona
+IMPLEMENTER_BACKEND = "implementer_backend"   # P7a-2: role-specific persona
+TEST_AGENT = "test_agent"  # P7b
 
-ALL_PERSONAS = (ORCHESTRATOR, IMPLEMENTER, TEST_AGENT)
+ALL_PERSONAS = (
+    ORCHESTRATOR,
+    IMPLEMENTER,
+    IMPLEMENTER_FRONTEND,
+    IMPLEMENTER_BACKEND,
+    TEST_AGENT,
+)
+
+
+# Mapping from manifest agentRole → persona id.  Stream bootstrap
+# (gateway.stream_bootstrap) calls this when constructing each
+# implementer's LongLivedSession so the worker loads the right prompt.
+_ROLE_TO_PERSONA = {
+    "frontend": IMPLEMENTER_FRONTEND,
+    "backend": IMPLEMENTER_BACKEND,
+}
+
+
+def role_to_persona(role: str) -> str:
+    """Map an agentRole ("frontend" / "backend") to its persona id.
+
+    Defense-in-depth — bootstrap already validates role against
+    ``stream_bootstrap._VALID_AGENT_ROLES`` before we ever see it, but
+    a future code path that bypasses that validation must not silently
+    pick a wrong persona.  Raises ``ValueError`` on unknown role.
+    """
+    persona = _ROLE_TO_PERSONA.get(role)
+    if persona is None:
+        raise ValueError(
+            f"unknown agentRole {role!r}; expected one of "
+            f"{sorted(_ROLE_TO_PERSONA)}"
+        )
+    return persona
 
 
 # Repo root resolution: this file lives at gateway/personas.py, so the
@@ -45,8 +79,9 @@ _PROMPTS_DIR = _REPO_ROOT / "prompts"
 # and TEST_AGENT here.
 PERSONA_PROMPT_PATHS: Dict[str, str] = {
     ORCHESTRATOR: "prompts/orchestrator.md",
-    # IMPLEMENTER: "prompts/implementer.md",  # P7
-    # TEST_AGENT: "prompts/test_agent.md",    # P7
+    IMPLEMENTER_FRONTEND: "prompts/implementer_frontend.md",  # P7a-2
+    IMPLEMENTER_BACKEND: "prompts/implementer_backend.md",    # P7a-2
+    # TEST_AGENT: "prompts/test_agent.md",    # P7b
 }
 
 

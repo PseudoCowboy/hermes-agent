@@ -197,8 +197,12 @@ class TestBuildStreamSandbox:
         root = tmp_path / "s"
         root.mkdir()
         s = build_stream_sandbox(root, registry=reg)
-        for name in ("read_file", "write_file", "edit_file", "search_files", "terminal"):
+        # P7a-2 fixed allowlist drift: default set now references the
+        # actually-registered editing tool (``patch``), not the never-
+        # registered ``edit_file`` placeholder.
+        for name in ("read_file", "write_file", "patch", "search_files", "terminal"):
             assert s.is_allowed(name)
+        assert not s.is_allowed("edit_file")
         assert not s.is_allowed("browser")
 
     def test_extra_tools_append(self, tmp_path):

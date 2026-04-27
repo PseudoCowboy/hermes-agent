@@ -7,6 +7,8 @@ import pytest
 from gateway.personas import (
     ALL_PERSONAS,
     IMPLEMENTER,
+    IMPLEMENTER_BACKEND,
+    IMPLEMENTER_FRONTEND,
     ORCHESTRATOR,
     PERSONA_PROMPT_PATHS,
     TEST_AGENT,
@@ -19,7 +21,13 @@ def test_persona_constants_present():
     assert ORCHESTRATOR == "orchestrator"
     assert IMPLEMENTER == "implementer"
     assert TEST_AGENT == "test_agent"
-    assert set(ALL_PERSONAS) == {ORCHESTRATOR, IMPLEMENTER, TEST_AGENT}
+    # P7a-2 added split implementer personas; the legacy IMPLEMENTER
+    # constant is kept for back-compat but ALL_PERSONAS now also lists
+    # the role-specific ids.
+    assert set(ALL_PERSONAS) == {
+        ORCHESTRATOR, IMPLEMENTER, TEST_AGENT,
+        IMPLEMENTER_FRONTEND, IMPLEMENTER_BACKEND,
+    }
 
 
 def test_orchestrator_prompt_loads_nonempty():
