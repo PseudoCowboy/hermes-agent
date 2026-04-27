@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,18 @@ class LongLivedSession:
         # worker can post status messages without having to parse the
         # session_key string.
         self.main_channel_id: Optional[str] = None
+        # P7a-1: per-stream session metadata.  Set on implementer
+        # sessions during stream bootstrap; remain ``None`` for the
+        # orchestrator session.
+        # - ``stream_name``: the stream's identifier from the manifest
+        #   (e.g. "frontend"), used as the workstreams/<stream>/ dir name.
+        # - ``worktree_root``: absolute Path to the per-stream git
+        #   worktree where the implementer agent does its file edits.
+        # - ``role``: "frontend" | "backend" — drives model routing in
+        #   P7a-2 (frontend → Gemini, backend → Claude).
+        self.stream_name: Optional[str] = None
+        self.worktree_root: Optional[Path] = None
+        self.role: Optional[str] = None
         self._lock = asyncio.Lock()
         self._inbox: asyncio.Queue[InboundMessage] = asyncio.Queue(
             maxsize=inbox_maxsize

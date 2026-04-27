@@ -1,4 +1,4 @@
-"""Per-session async agent worker (P6).
+"""Per-session async agent worker (P6 + P7a-1 approval hook).
 
 Each :class:`gateway.session_router.LongLivedSession` has at most one
 ``session_agent_worker`` task running.  The worker:
@@ -34,6 +34,7 @@ Scope-binding:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -169,6 +170,213 @@ async def _post_error_to_main_channel(
         )
 
 
+def _consume_approval_event_marker(
+    session: "LongLivedSession",
+) -> Optional[Dict[str, Any]]:
+    """Read-and-truncate ``control/approval-event.json`` for this project.
+
+    Returns the parsed JSON payload if a non-empty marker existed, else
+    ``None``.  Truncation is "delete the file" — `workflow_approve_plan`
+    re-creates it atomically on the next approval.
+
+    Best-effort: any IO/JSON error returns ``None`` and is logged.  We
+    do not want a corrupt marker to wedge the worker; the operator can
+    re-approve.
+    """
+    if not session.slug:
+        # Orchestrator session must have a slug after project bootstrap;
+        # if missing, nothing to consume.
+        return None
+    try:
+        # Lazy import — avoids pulling tools.workflow_tools into the
+        # gateway import graph at module load time.
+        from tools.workflow_tools import project_path
+
+        root = project_path(session.slug, session.scope_id)
+        marker_path = root / "control" / "approval-event.json"
+        if not marker_path.is_file():
+            return None
+        raw = marker_path.read_text(encoding="utf-8").strip()
+        if not raw:
+            # Empty file — same as no marker.  Clean it up so we don't
+            # keep stat'ing it every turn.
+            try:
+                marker_path.unlink()
+            except OSError:
+                pass
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning(
+                "approval-event marker for %s is not valid JSON; discarding",
+                session.session_key,
+            )
+            try:
+                marker_path.unlink()
+            except OSError:
+                pass
+            return None
+        # Delete after a successful read so a crash mid-bootstrap is
+        # recoverable: the marker stays on disk only if we never read
+        # it.  If bootstrap fails, the operator re-approves and a fresh
+        # marker is written.
+        try:
+            marker_path.unlink()
+        except OSError:
+            logger.warning(
+                "could not unlink approval-event marker at %s",
+                marker_path, exc_info=True,
+            )
+        if isinstance(payload, dict):
+            return payload
+        return None
+    except Exception:
+        logger.exception(
+            "failed to consume approval-event marker for %s",
+            session.session_key,
+        )
+        return None
+
+
+def _load_workstream_manifest(
+    session: "LongLivedSession",
+) -> Optional[Dict[str, Any]]:
+    """Read the project's ``workstreams/manifest.json``.
+
+    Returns the manifest dict, or ``None`` if missing or unreadable.
+    The caller surfaces a useful error to the operator — manifest
+    absence after approval is a workflow bug, not a transient failure.
+    """
+    if not session.slug:
+        return None
+    try:
+        from tools.workflow_tools import project_path
+
+        root = project_path(session.slug, session.scope_id)
+        manifest_path = root / "workstreams" / "manifest.json"
+        if not manifest_path.is_file():
+            return None
+        raw = manifest_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception:
+        logger.exception(
+            "failed to load workstreams/manifest.json for %s",
+            session.session_key,
+        )
+        return None
+
+
+def _resolve_orchestration_guild_id(runner: "GatewayRunner") -> Optional[str]:
+    """Pull ``orchestration_guild_id`` off the runner's Discord platform config."""
+    config = getattr(runner, "config", None)
+    platforms = getattr(config, "platforms", None) if config else None
+    if not platforms:
+        return None
+    try:
+        from gateway.session import Platform
+
+        discord_cfg = platforms.get(Platform.DISCORD)
+    except Exception:
+        return None
+    if discord_cfg is None:
+        return None
+    gid = getattr(discord_cfg, "orchestration_guild_id", None)
+    return str(gid) if gid else None
+
+
+async def _maybe_run_stream_bootstrap(
+    session: "LongLivedSession",
+    runner: "GatewayRunner",
+    adapter: Any,
+) -> None:
+    """Post-turn hook: if an approval-event marker is present, bootstrap streams.
+
+    Called after every successful orchestrator turn.  No-op when no
+    marker.  All failures are surfaced to the main channel and never
+    propagated — the worker must keep consuming inbound messages.
+    """
+    payload = _consume_approval_event_marker(session)
+    if payload is None:
+        return
+
+    # Validate the marker payload before treating it as an approval
+    # signal.  A corrupt/spoofed marker without ``event == "approved"``
+    # or a non-empty ``approved_head_sha`` must not trigger bootstrap —
+    # the marker is only trustworthy when written by
+    # ``workflow_approve_plan``, and that writer always populates both
+    # fields.  Reject (and post a visible error) if either is missing.
+    event_kind = payload.get("event")
+    approved_head_sha = payload.get("approved_head_sha")
+    if event_kind != "approved" or not (
+        isinstance(approved_head_sha, str) and approved_head_sha.strip()
+    ):
+        logger.warning(
+            "approval-event marker for %s missing required fields "
+            "(event=%r, approved_head_sha=%r); ignoring",
+            session.session_key, event_kind, approved_head_sha,
+        )
+        await _post_error_to_main_channel(
+            session, adapter,
+            "⚠️ approval-event marker is malformed (missing `event=approved` or "
+            "`approved_head_sha`) — ignoring. Re-run plan approval.",
+        )
+        return
+
+    manifest = _load_workstream_manifest(session)
+    if not manifest:
+        await _post_error_to_main_channel(
+            session, adapter,
+            "⚠️ Plan was approved but `workstreams/manifest.json` is missing or "
+            "unreadable — cannot bootstrap streams. Re-run plan decomposition.",
+        )
+        return
+
+    guild_id = _resolve_orchestration_guild_id(runner)
+    if not guild_id:
+        await _post_error_to_main_channel(
+            session, adapter,
+            "⚠️ `orchestration_guild_id` is not configured — cannot bootstrap "
+            "stream channels.",
+        )
+        return
+
+    # Lazy import: stream_bootstrap pulls platform helpers we don't want
+    # at import time.
+    from gateway.stream_bootstrap import bootstrap_streams_for_project
+
+    try:
+        result = await bootstrap_streams_for_project(
+            runner=runner,
+            scope_id=session.scope_id or "",
+            slug=session.slug,
+            main_channel_id=session.main_channel_id or session.session_key,
+            workstream_manifest=manifest,
+            approved_head_sha=payload.get("approved_head_sha"),
+            adapter=adapter,
+            guild_id=guild_id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "stream bootstrap raised for %s",
+            session.session_key,
+        )
+        await _post_error_to_main_channel(
+            session, adapter,
+            f"⚠️ Stream bootstrap failed unexpectedly: {exc}",
+        )
+        return
+
+    if result.error:
+        await _post_error_to_main_channel(
+            session, adapter,
+            f"⚠️ Stream bootstrap failed: {result.error}",
+        )
+
+
 async def session_agent_worker(
     session: "LongLivedSession",
     *,
@@ -280,6 +488,16 @@ async def session_agent_worker(
             new_history = result.get("conversation_history") if isinstance(result, dict) else None
             if isinstance(new_history, list):
                 history = new_history
+
+            # P7a-1 post-turn hook: if the operator approved the plan
+            # this turn (orchestrator called workflow_approve_plan, which
+            # writes control/approval-event.json), bootstrap stream
+            # channels + worktrees + stub workers now.  No-op when no
+            # marker is present.  All errors are surfaced to the main
+            # channel and never propagated — the worker must stay alive
+            # to handle subsequent operator messages.
+            if session.persona == ORCHESTRATOR:
+                await _maybe_run_stream_bootstrap(session, runner, adapter)
         except asyncio.CancelledError:
             logger.info(
                 "session_agent_worker cancelled mid-turn for %s",

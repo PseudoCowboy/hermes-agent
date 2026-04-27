@@ -343,6 +343,26 @@ async def bootstrap_new_project(
                 "session inbox refused the seeded requirement"
             )
 
+        # Step 7 (P7a-1): write the initial project_runstate with
+        # ``phase="draft"`` so P7b's rehydration / status tooling has
+        # a starting point on disk.  Best-effort — runstate is
+        # observability, never block bootstrap on an IO failure here.
+        try:
+            from hermes_cli.runstate import write_project_runstate
+
+            write_project_runstate(
+                scope_id or "",
+                slug,
+                phase="draft",
+                main_channel_id=main_channel_id,
+                merged_streams=[],
+            )
+        except Exception:
+            logger.warning(
+                "failed to write initial project_runstate for %s/%s",
+                scope_id, slug, exc_info=True,
+            )
+
         return f"✓ Project created — see <#{main_channel_id}>"
 
     except Exception as exc:

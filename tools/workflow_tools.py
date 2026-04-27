@@ -1268,22 +1268,88 @@ def workflow_approve_plan(
         state["approvedAt"] = _now_iso()
         state["approvedFrom"] = plan_file.name
 
+        # P7a-1: materialise the integration worktree for this project
+        # before computing the head sha.  ``workflow_approve_plan`` runs
+        # in the orchestrator's coordination dir (no implementation
+        # commits yet), so the head we want to record is the integration
+        # worktree's HEAD — that's the base future implementer streams
+        # branch off of.  ensure_integration_worktree is idempotent.
+        approved_head_sha: str | None = None
+        try:
+            from hermes_cli.project_worktree import (
+                WorktreeError,
+                _run_git,
+                ensure_integration_worktree,
+            )
+
+            handles = ensure_integration_worktree(scope_id or "", slug)
+            head_out = _run_git(
+                ["rev-parse", "HEAD"], cwd=handles.integration_worktree
+            )
+            approved_head_sha = head_out.strip() or None
+        except Exception as exc:
+            # Don't block plan approval on worktree setup — record the
+            # failure on plan_state instead so the orchestrator sees it.
+            # Stream bootstrap (P7a-1) will fail loudly later if the sha
+            # is missing, which is the correct surface for the operator.
+            state["worktreeError"] = str(exc)
+
+        # P7a-1: emit an approval-event.json marker next to plan-state.
+        # The orchestrator's session worker reads-and-truncates this file
+        # post-turn to trigger ``bootstrap_streams_for_project``.  Atomic
+        # write means a crash mid-write leaves no half-formed marker.
+        approval_event_path = root / "control" / "approval-event.json"
+        approval_event_payload = {
+            "event": "approved",
+            "approved_at": state["approvedAt"],
+            "approved_head_sha": approved_head_sha,
+            "plan_slug": plan_slug,
+        }
+
         try:
             _atomic_write_many_text([
                 (approved_path, plan_content),
                 (state_path, _json_text(state)),
+                (approval_event_path, _json_text(approval_event_payload)),
             ])
         except OSError as exc:
             return tool_error(f"failed to approve plan: {exc}")
 
-        return json.dumps({
-            "success": True,
-            "project_slug": slug,
-            "plan_slug": plan_slug,
-            "approved_from": plan_file.name,
-            "approved_plan_path": str(approved_path),
-            "plan_state": state,
-        }, ensure_ascii=False)
+        # P7a-1: write project runstate phase=approved.  Done OUTSIDE the
+        # _atomic_write_many_text batch because ``write_project_runstate``
+        # acquires its own _project_lock — re-entering would deadlock on
+        # platforms where flock isn't reentrant.  We're already inside
+        # _project_lock here, but the writer's lock is the same advisory
+        # lock and POSIX flock IS recursive within the same fd... however
+        # the writer opens its own fd, which is NOT reentrant.  Move the
+        # call outside the with block instead — see below.
+        runstate_payload = {
+            "phase": "approved",
+            "approved_head_sha": approved_head_sha,
+        }
+
+    # Outside the _project_lock context: write_project_runstate takes
+    # its own lock on the same advisory file, and POSIX flock on a
+    # *different* fd to the same file blocks.  Doing it here keeps the
+    # critical section short and avoids the fd-reentrancy footgun.
+    try:
+        from hermes_cli.runstate import write_project_runstate
+
+        write_project_runstate(scope_id, slug, **runstate_payload)
+    except Exception:
+        # Runstate is observability — never fail plan approval if it
+        # can't be written.  Stream bootstrap will write its own.
+        pass
+
+    return json.dumps({
+        "success": True,
+        "project_slug": slug,
+        "plan_slug": plan_slug,
+        "approved_from": plan_file.name,
+        "approved_plan_path": str(approved_path),
+        "approved_head_sha": approved_head_sha,
+        "plan_state": state,
+    }, ensure_ascii=False)
 
 
 # =============================================================================

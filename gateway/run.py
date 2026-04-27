@@ -982,6 +982,32 @@ class GatewayRunner:
                 guild_id=str(guild_id),
             )
 
+    async def merge_lock_for(self, scope_id: str, slug: str) -> "asyncio.Lock":
+        """Return the per-project asyncio.Lock for ``(scope_id, slug)``.
+
+        P7a-1 uses this to serialize stream-bootstrap (so two concurrent
+        ✅ reactions on different turns can't race two bootstraps for
+        the same project).  P7b will reuse the same lock for the merge
+        queue scan so a bootstrap-in-flight can't race a merge.
+
+        Lazily created and never freed — there are O(open projects)
+        keys, not O(turns), so the dict can't grow unboundedly during
+        normal operation.  The guard lock around setdefault prevents a
+        race between two coroutines creating two different Lock objects
+        for the same key (which would defeat the point — they wouldn't
+        contend with each other).
+        """
+        if not hasattr(self, "_project_merge_locks"):
+            self._project_merge_locks: dict = {}
+            self._project_merge_locks_guard = asyncio.Lock()
+        key = (scope_id or "", slug)
+        async with self._project_merge_locks_guard:
+            lock = self._project_merge_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._project_merge_locks[key] = lock
+            return lock
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
