@@ -677,6 +677,14 @@ class DiscordAdapter(BasePlatformAdapter):
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
 
+            # Register as the active orchestration adapter so tool
+            # handlers in tools/discord_orchestration_tools.py can resolve
+            # guild/channel IDs and reach the reaction waiter (§4).
+            from gateway.platforms.discord_orchestration import (
+                set_active_adapter,
+            )
+            set_active_adapter(self)
+
             self._running = True
             return True
 
@@ -719,6 +727,16 @@ class DiscordAdapter(BasePlatformAdapter):
         self._running = False
         self._client = None
         self._ready_event.clear()
+
+        # Drop our handle from the orchestration singleton so subsequent
+        # tool dispatches fail fast instead of NPE'ing on the closed client.
+        try:
+            from gateway.platforms.discord_orchestration import (
+                clear_active_adapter,
+            )
+            clear_active_adapter()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
         # Release the token lock
         try:

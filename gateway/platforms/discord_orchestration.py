@@ -433,3 +433,53 @@ def install_reaction_handler(
             logger.exception("on_raw_reaction_add handler failed")
 
     return on_raw_reaction_add
+
+
+# =============================================================================
+# Active-adapter singleton (§4 — tool handlers reach the live adapter)
+# =============================================================================
+#
+# Tool handlers in ``tools/discord_orchestration_tools.py`` need a live
+# ``DiscordAdapter`` to resolve guild/channel IDs and to access
+# ``adapter._reaction_waiter``.  Threading the adapter through
+# ``ToolRegistry.dispatch`` would touch every existing call site, so we
+# keep the registry signature unchanged and look up the adapter via a
+# tiny module-level singleton.
+#
+# This matches the design's single-bot-process assumption (§0).  The
+# adapter registers itself when ``connect()`` succeeds and clears itself
+# on teardown; tests inject fakes via :func:`set_active_adapter`.
+
+_active_adapter: Optional[Any] = None
+
+
+def set_active_adapter(adapter: Any) -> None:
+    """Register *adapter* as the live Discord adapter for tool handlers.
+
+    Idempotent.  If a different adapter is already registered, replaces
+    it — single-bot-process means no adapter overlap is expected, but
+    re-binding cleanly is the safest behavior for tests and for restarts
+    where the old instance has already torn down.
+    """
+    global _active_adapter
+    _active_adapter = adapter
+
+
+def clear_active_adapter() -> None:
+    """Unregister the active adapter (called from adapter teardown / tests)."""
+    global _active_adapter
+    _active_adapter = None
+
+
+def get_active_adapter() -> Any:
+    """Return the live adapter or raise :class:`OrchestrationError`.
+
+    Tool handlers call this at dispatch time; if no adapter has registered
+    yet (gateway not started, or already torn down) the call fails fast
+    with a clear message rather than NPE'ing on attribute access.
+    """
+    if _active_adapter is None:
+        raise OrchestrationError(
+            "no active discord adapter; gateway not connected"
+        )
+    return _active_adapter

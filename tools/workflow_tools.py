@@ -2639,7 +2639,7 @@ def workflow_review_task(
 
 registry.register(
     name="workflow_save_plan",
-    toolset="workflow-mutating",
+    toolset="workflow-orchestrator-mutating",
     schema=WORKFLOW_SAVE_PLAN_SCHEMA,
     handler=lambda args, **kw: workflow_save_plan(
         project_name=args.get("project_name", ""),
@@ -2658,7 +2658,7 @@ registry.register(
 
 registry.register(
     name="workflow_create_project",
-    toolset="workflow-mutating",
+    toolset="workflow-orchestrator-mutating",
     schema=WORKFLOW_CREATE_PROJECT_SCHEMA,
     handler=lambda args, **kw: workflow_create_project(
         project_name=args.get("project_name", ""),
@@ -2671,7 +2671,7 @@ registry.register(
 
 registry.register(
     name="workflow_approve_plan",
-    toolset="workflow-mutating",
+    toolset="workflow-orchestrator-mutating",
     schema=WORKFLOW_APPROVE_PLAN_SCHEMA,
     handler=lambda args, **kw: workflow_approve_plan(
         project_name=args.get("project_name", ""),
@@ -2698,7 +2698,7 @@ registry.register(
 
 registry.register(
     name="workflow_decompose",
-    toolset="workflow-mutating",
+    toolset="workflow-orchestrator-mutating",
     schema=WORKFLOW_DECOMPOSE_SCHEMA,
     handler=lambda args, **kw: workflow_decompose(
         project_name=args.get("project_name", ""),
@@ -2713,7 +2713,7 @@ registry.register(
 
 registry.register(
     name="workflow_handoff",
-    toolset="workflow-mutating",
+    toolset="workflow-orchestrator-mutating",
     schema=WORKFLOW_HANDOFF_SCHEMA,
     handler=lambda args, **kw: workflow_handoff(
         project_name=args.get("project_name", ""),
@@ -2731,7 +2731,7 @@ registry.register(
 
 registry.register(
     name="workflow_checkpoint",
-    toolset="workflow-mutating",
+    toolset="workflow-stream-mutating",
     schema=WORKFLOW_CHECKPOINT_SCHEMA,
     handler=lambda args, **kw: workflow_checkpoint(
         project_name=args.get("project_name", ""),
@@ -2749,7 +2749,7 @@ registry.register(
 
 registry.register(
     name="workflow_sync_tasks",
-    toolset="workflow-mutating",
+    toolset="workflow-orchestrator-mutating",
     schema=WORKFLOW_SYNC_TASKS_SCHEMA,
     handler=lambda args, **kw: workflow_sync_tasks(
         project_name=args.get("project_name", ""),
@@ -2764,7 +2764,7 @@ registry.register(
 
 registry.register(
     name="workflow_review_task",
-    toolset="workflow-mutating",
+    toolset="workflow-stream-mutating",
     schema=WORKFLOW_REVIEW_TASK_SCHEMA,
     handler=lambda args, **kw: workflow_review_task(
         project_name=args.get("project_name", ""),

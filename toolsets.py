@@ -67,19 +67,36 @@ _HERMES_CORE_TOOLS = [
 ]
 
 
-# Repo-mutating workflow tools. These rewrite files under
-# groups/shared_project/active/<slug>/ and are only enabled on platforms
-# that need them (CLI, Discord). Other platforms get workflow_status only.
-_HERMES_WORKFLOW_MUTATING_TOOLS = [
+# Repo-mutating workflow tools, split per design §4 of
+# plans/discord-orchestration-spec/02-technical-design.md.
+#
+# Orchestrator-mutating: project topology + plan lifecycle.  The
+# orchestrator owns project creation, plan persistence, decomposition
+# into streams, cross-stream handoffs, and per-stream task seeding.
+_HERMES_WORKFLOW_ORCHESTRATOR_MUTATING_TOOLS = [
     "workflow_create_project",
     "workflow_save_plan",
     "workflow_approve_plan",
     "workflow_decompose",
     "workflow_handoff",
-    "workflow_checkpoint",
     "workflow_sync_tasks",
+]
+
+# Stream-mutating: progress writes + verdicts.  Stream agents and
+# test-agents need these; the orchestrator inherits them via the
+# back-compat composite below.
+_HERMES_WORKFLOW_STREAM_MUTATING_TOOLS = [
+    "workflow_checkpoint",
     "workflow_review_task",
 ]
+
+# Back-compat union — referenced by older toolset definitions
+# (hermes-cli, hermes-discord) below.  Future per-session toolsets
+# (P5/P6) will pick the orchestrator vs stream subset directly.
+_HERMES_WORKFLOW_MUTATING_TOOLS = (
+    _HERMES_WORKFLOW_ORCHESTRATOR_MUTATING_TOOLS
+    + _HERMES_WORKFLOW_STREAM_MUTATING_TOOLS
+)
 
 
 # Core toolset definitions
@@ -226,10 +243,31 @@ TOOLSETS = {
         "includes": []
     },
 
-    "workflow-mutating": {
-        "description": "Repo-first project workflow (mutating): create projects, approve plans, decompose into streams, record reviews, handoffs, checkpoints",
-        "tools": list(_HERMES_WORKFLOW_MUTATING_TOOLS),
+    # New, narrower buckets per discord-orchestration-spec §4.  The
+    # orchestrator persona gets ``workflow-orchestrator-mutating`` plus
+    # ``workflow-stream-mutating``; stream agents get only the latter.
+    "workflow-orchestrator-mutating": {
+        "description": "Orchestrator-only workflow mutators: project topology + plan lifecycle (create, save_plan, approve_plan, decompose, handoff, sync_tasks)",
+        "tools": list(_HERMES_WORKFLOW_ORCHESTRATOR_MUTATING_TOOLS),
         "includes": []
+    },
+
+    "workflow-stream-mutating": {
+        "description": "Stream-only workflow mutators: per-stream progress + verdict writes (checkpoint, review_task)",
+        "tools": list(_HERMES_WORKFLOW_STREAM_MUTATING_TOOLS),
+        "includes": []
+    },
+
+    # Back-compat composite: ``workflow-mutating`` still resolves to the
+    # full union via ``includes`` so existing platform configs and
+    # callers that resolve this name keep working unchanged.
+    "workflow-mutating": {
+        "description": "Repo-first project workflow (mutating): full union of orchestrator + stream mutators (back-compat composite)",
+        "tools": [],
+        "includes": [
+            "workflow-orchestrator-mutating",
+            "workflow-stream-mutating",
+        ]
     },
 
     # Back-compat composite: `workflow` still resolves to the full set so
@@ -240,6 +278,38 @@ TOOLSETS = {
         "description": "Repo-first project workflow: full set (composite of workflow-readonly + workflow-mutating)",
         "tools": [],
         "includes": ["workflow-readonly", "workflow-mutating"]
+    },
+
+    # Discord orchestration tools (per spec §4).  The two halves are
+    # split so that stream-bound agents can carry only the stream half;
+    # the orchestrator carries both via the back-compat composite below.
+    "discord-orchestration-admin": {
+        "description": "Discord orchestration admin (orchestrator only): create project category, create stream channel, archive project category",
+        "tools": [
+            "discord_create_project_category",
+            "discord_create_stream_channel",
+            "discord_archive_project_category",
+        ],
+        "includes": []
+    },
+
+    "discord-orchestration-stream": {
+        "description": "Discord orchestration stream ops (orchestrator + stream agents): post message, react to message, wait for reaction",
+        "tools": [
+            "discord_post_message",
+            "discord_react_to_message",
+            "discord_wait_for_reaction",
+        ],
+        "includes": []
+    },
+
+    "discord-orchestration": {
+        "description": "Full Discord orchestration toolset (composite of admin + stream halves)",
+        "tools": [],
+        "includes": [
+            "discord-orchestration-admin",
+            "discord-orchestration-stream",
+        ]
     },
 
 

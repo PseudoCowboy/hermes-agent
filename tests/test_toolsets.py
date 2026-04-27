@@ -192,11 +192,16 @@ class TestWorkflowToolsetRegistration:
         assert registry.get_toolset_for_tool("workflow_status") == "workflow-readonly"
 
     def test_mutating_workflow_tools_registered_as_mutating(self):
+        # Per P4 the legacy ``workflow-mutating`` bucket was split into
+        # orchestrator-only and stream-only halves (see
+        # plans/discord-orchestration-spec/02-technical-design.md §4).
+        # The legacy name now lives only as a back-compat composite.
         import model_tools  # noqa: F401
         from tools.registry import registry
         from toolsets import _HERMES_WORKFLOW_MUTATING_TOOLS
 
         for tool in _HERMES_WORKFLOW_MUTATING_TOOLS:
-            assert registry.get_toolset_for_tool(tool) == "workflow-mutating", (
-                f"{tool} should be in the workflow-mutating toolset"
-            )
+            assert registry.get_toolset_for_tool(tool) in (
+                "workflow-orchestrator-mutating",
+                "workflow-stream-mutating",
+            ), f"{tool} should be in one of the split workflow-mutating buckets"
