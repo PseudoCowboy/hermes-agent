@@ -131,13 +131,22 @@ class SandboxedToolset:
         return resolved
 
     def validate_args(self, name: str, args: dict) -> dict:
-        """Return a copy of *args* with all sandboxable path keys validated.
+        """Return a copy of *args* with all sandboxable path keys validated
+        AND rewritten to absolute, root-anchored canonical strings.
 
         Does not mutate *args*. Raises :class:`SandboxViolation` on the
         first violation. If *force_workdir* is enabled and ``workdir``
         is absent, injects the sandbox root. Unknown-name tools (not in
         the allowlist) raise :class:`SandboxViolation` before any path
         check runs.
+
+        Rewriting matters for safety: downstream tools (file_operations,
+        terminal environments) resolve relatives against the *process*
+        cwd, not the sandbox root. Forwarding the original relative
+        string would let ``"path": "foo.txt"`` validate against
+        ``<root>/foo.txt`` yet execute against ``<process_cwd>/foo.txt``.
+        We therefore replace each path arg with the canonical resolved
+        absolute path so the downstream tool sees what the sandbox saw.
         """
         if name not in self.allowed_tools:
             raise SandboxViolation(
@@ -149,7 +158,11 @@ class SandboxedToolset:
         out = dict(args)
         for key in _PATH_ARG_KEYS:
             if key in out and out[key] is not None and out[key] != "":
-                self.validate_path(out[key], arg_name=key)
+                resolved = self.validate_path(out[key], arg_name=key)
+                # Rewrite to the canonical absolute path so downstream
+                # tools cannot reinterpret a relative against a different
+                # cwd. This is the core sandbox guarantee.
+                out[key] = str(resolved)
 
         if self.force_workdir:
             for key in _WORKDIR_ARG_KEYS:

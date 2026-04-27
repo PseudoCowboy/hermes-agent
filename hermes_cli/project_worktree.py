@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -46,6 +48,41 @@ _DEFAULT_WORKTREES_DIR = ".worktrees"
 # or one-off scripts never synthesizes a traversal segment here.
 _BAD_SEGMENT_CHARS = frozenset({"/", "\\", "\x00"})
 _INTEGRATION_SEGMENT = "_integration"
+
+# In-process locks keyed by (scope_id, slug). Two concurrent callers in
+# the same process serialize through this lock so check-then-create
+# races become check-then-create-under-lock. Cross-process safety
+# additionally relies on the per-call retry below catching git's
+# "cannot lock ref / already exists" errors and re-checking state.
+_PROJECT_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_PROJECT_LOCKS_GUARD = threading.Lock()
+
+# Substrings git emits when a concurrent worktree-add or branch-create
+# raced us. Treat these as "the desired state may now exist; re-check".
+_RETRYABLE_GIT_ERRORS = (
+    "cannot lock ref",
+    "already exists",
+    "already checked out",
+    "is already registered",
+)
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_S = 0.05
+
+
+def _project_lock(scope_id: str, slug: str) -> threading.Lock:
+    """Return the in-process lock for (scope_id, slug)."""
+    key = (scope_id, slug)
+    with _PROJECT_LOCKS_GUARD:
+        lock = _PROJECT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PROJECT_LOCKS[key] = lock
+        return lock
+
+
+def _is_retryable_git_error(exc: "WorktreeError") -> bool:
+    msg = str(exc).lower()
+    return any(token in msg for token in _RETRYABLE_GIT_ERRORS)
 
 
 class WorktreeError(RuntimeError):
@@ -215,6 +252,24 @@ def _worktree_is_registered(path: Path, *, repo_root: Path) -> bool:
     return False
 
 
+def _worktree_head_branch(path: Path) -> Optional[str]:
+    """Return the current branch name in *path*, or None on detached/error.
+
+    Used by the idempotent fast path to confirm an already-registered
+    worktree is still on the branch we expected.  Without this check,
+    a worktree whose HEAD has drifted (someone ran ``git checkout
+    other-branch`` inside it) would be silently accepted.
+    """
+    try:
+        out = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+    except WorktreeError:
+        return None
+    branch = out.strip()
+    if not branch or branch == "HEAD":
+        return None
+    return branch
+
+
 def ensure_integration_worktree(
     scope_id: str,
     slug: str,
@@ -228,14 +283,25 @@ def ensure_integration_worktree(
     ``project/<scope_id>/<slug>/_integration`` starting at *base*, then
     adds a worktree at ``.worktrees/<scope_id>/<slug>/_integration/``
     pointing at that branch. Re-entrant: a fully-materialized
-    (branch + worktree + dir) setup is left alone.
+    (branch + worktree + dir) setup with HEAD on the expected branch is
+    left alone.
+
+    Concurrency: in-process callers serialize on a per-(scope, slug)
+    lock; cross-process races on the same git repo are absorbed by a
+    bounded retry that re-checks state when git emits its
+    "cannot lock ref" / "already exists" / "already checked out" /
+    "is already registered" family of errors.
+
+    Drift detection: the fast path verifies that the existing worktree's
+    HEAD matches the expected branch.  A drifted worktree raises
+    :class:`WorktreeError` rather than silently returning a misbound
+    handle (matches the design's "no surprises" contract).
     """
     root = repo_root if repo_root is not None else _repo_root()
     branch = project_branch_name(scope_id, slug)
     wt_path = integration_worktree_path(scope_id, slug, repo_root=root)
-    wt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if wt_path.is_dir() and _worktree_is_registered(wt_path, repo_root=root):
+    def _build_handles() -> WorktreeHandles:
         return WorktreeHandles(
             scope_id=scope_id,
             slug=slug,
@@ -244,18 +310,42 @@ def ensure_integration_worktree(
             integration_branch=branch,
         )
 
-    if _branch_exists(branch, repo_root=root):
-        _run_git(["worktree", "add", str(wt_path), branch], cwd=root)
-    else:
-        _run_git(["worktree", "add", "-b", branch, str(wt_path), base], cwd=root)
-
-    return WorktreeHandles(
-        scope_id=scope_id,
-        slug=slug,
-        worktree_root=project_worktree_root(scope_id, slug, repo_root=root),
-        integration_worktree=wt_path,
-        integration_branch=branch,
-    )
+    with _project_lock(scope_id, slug):
+        wt_path.parent.mkdir(parents=True, exist_ok=True)
+        last_err: Optional[WorktreeError] = None
+        for attempt in range(_MAX_RETRIES):
+            if wt_path.is_dir() and _worktree_is_registered(wt_path, repo_root=root):
+                head = _worktree_head_branch(wt_path)
+                if head == branch:
+                    return _build_handles()
+                if head is None:
+                    raise WorktreeError(
+                        f"integration worktree {wt_path!r} exists but HEAD "
+                        f"is detached or unreadable; expected branch {branch!r}"
+                    )
+                raise WorktreeError(
+                    f"integration worktree {wt_path!r} is on branch {head!r} "
+                    f"but expected {branch!r}; refusing to silently rebind"
+                )
+            try:
+                if _branch_exists(branch, repo_root=root):
+                    _run_git(["worktree", "add", str(wt_path), branch], cwd=root)
+                else:
+                    _run_git(
+                        ["worktree", "add", "-b", branch, str(wt_path), base],
+                        cwd=root,
+                    )
+                return _build_handles()
+            except WorktreeError as exc:
+                if not _is_retryable_git_error(exc):
+                    raise
+                last_err = exc
+                time.sleep(_RETRY_BACKOFF_S * (attempt + 1))
+        # Exhausted retries — surface the last git error as the cause.
+        raise WorktreeError(
+            f"failed to create integration worktree {wt_path!r} after "
+            f"{_MAX_RETRIES} retries"
+        ) from last_err
 
 
 def ensure_stream_worktree(
@@ -271,6 +361,9 @@ def ensure_stream_worktree(
     :func:`ensure_integration_worktree`; this function refuses if the
     integration branch is absent, so a stream can never be created off
     a stale base.
+
+    Concurrency and drift handling mirror
+    :func:`ensure_integration_worktree`.
     """
     root = repo_root if repo_root is not None else _repo_root()
     integration = project_branch_name(scope_id, slug)
@@ -282,19 +375,42 @@ def ensure_stream_worktree(
 
     branch = stream_branch_name(scope_id, slug, stream)
     wt_path = stream_worktree_path(scope_id, slug, stream, repo_root=root)
-    wt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if wt_path.is_dir() and _worktree_is_registered(wt_path, repo_root=root):
-        return wt_path
-
-    if _branch_exists(branch, repo_root=root):
-        _run_git(["worktree", "add", str(wt_path), branch], cwd=root)
-    else:
-        _run_git(
-            ["worktree", "add", "-b", branch, str(wt_path), integration],
-            cwd=root,
-        )
-    return wt_path
+    with _project_lock(scope_id, slug):
+        wt_path.parent.mkdir(parents=True, exist_ok=True)
+        last_err: Optional[WorktreeError] = None
+        for attempt in range(_MAX_RETRIES):
+            if wt_path.is_dir() and _worktree_is_registered(wt_path, repo_root=root):
+                head = _worktree_head_branch(wt_path)
+                if head == branch:
+                    return wt_path
+                if head is None:
+                    raise WorktreeError(
+                        f"stream worktree {wt_path!r} exists but HEAD "
+                        f"is detached or unreadable; expected branch {branch!r}"
+                    )
+                raise WorktreeError(
+                    f"stream worktree {wt_path!r} is on branch {head!r} "
+                    f"but expected {branch!r}; refusing to silently rebind"
+                )
+            try:
+                if _branch_exists(branch, repo_root=root):
+                    _run_git(["worktree", "add", str(wt_path), branch], cwd=root)
+                else:
+                    _run_git(
+                        ["worktree", "add", "-b", branch, str(wt_path), integration],
+                        cwd=root,
+                    )
+                return wt_path
+            except WorktreeError as exc:
+                if not _is_retryable_git_error(exc):
+                    raise
+                last_err = exc
+                time.sleep(_RETRY_BACKOFF_S * (attempt + 1))
+        raise WorktreeError(
+            f"failed to create stream worktree {wt_path!r} after "
+            f"{_MAX_RETRIES} retries"
+        ) from last_err
 
 
 def _is_under(path: Path, parent: Path) -> bool:

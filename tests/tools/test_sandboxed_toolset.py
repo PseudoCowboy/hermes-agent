@@ -90,7 +90,9 @@ class TestValidateArgs:
 
     def test_validates_path_argument(self, sandbox):
         out = sandbox.validate_args("read_file", {"path": "hello.txt"})
-        assert out["path"] == "hello.txt"
+        # Path is rewritten to canonical absolute form so downstream
+        # tools cannot reinterpret the relative against a different cwd.
+        assert out["path"] == str((sandbox.root / "hello.txt").resolve())
 
     def test_rejects_path_escape(self, sandbox):
         with pytest.raises(SandboxViolation):
@@ -111,7 +113,8 @@ class TestValidateArgs:
         out = sandbox.validate_args(
             "terminal", {"command": "ls", "workdir": "sub"}
         )
-        assert out["workdir"] == "sub"
+        # workdir is rewritten to the canonical absolute form.
+        assert out["workdir"] == str((sandbox.root / "sub").resolve())
 
     def test_rejects_explicit_absolute_workdir(self, sandbox):
         with pytest.raises(SandboxViolation):
@@ -138,7 +141,8 @@ class TestDispatch:
         assert len(calls) == 1
         name, args, _ = calls[0]
         assert name == "read_file"
-        assert args["path"] == "hello.txt"
+        # Forwarded path is canonical absolute so cwd cannot reroute it.
+        assert args["path"] == str((sandbox.root / "hello.txt").resolve())
 
     def test_dispatch_returns_json_error_on_violation(self, sandbox):
         out = sandbox.dispatch("read_file", {"path": "/etc/passwd"})
@@ -158,6 +162,28 @@ class TestDispatch:
         name, args, _ = sandbox.registry.calls[-1]
         assert name == "terminal"
         assert args["workdir"] == str(sandbox.root.resolve())
+
+    def test_canonical_rewrite_blocks_cwd_reinterpretation(self, sandbox, tmp_path, monkeypatch):
+        """Regression: a relative path forwarded as-is would resolve
+        against process cwd downstream. The sandbox must rewrite to an
+        absolute path so cwd cannot reroute the operation.
+        """
+        # Create a same-named decoy file outside the sandbox root.
+        decoy_dir = tmp_path / "decoy"
+        decoy_dir.mkdir()
+        (decoy_dir / "hello.txt").write_text("decoy content")
+        # Move process cwd to the decoy dir to simulate a downstream
+        # tool that resolves relatives against cwd, not against sandbox.
+        monkeypatch.chdir(decoy_dir)
+
+        sandbox.dispatch("read_file", {"path": "hello.txt"})
+        name, args, _ = sandbox.registry.calls[-1]
+        forwarded = Path(args["path"])
+        # The forwarded path is absolute and points into the sandbox
+        # root (NOT into the decoy dir under cwd).
+        assert forwarded.is_absolute()
+        assert forwarded == (sandbox.root / "hello.txt").resolve()
+        assert decoy_dir.resolve() not in forwarded.parents
 
 
 # =============================================================================

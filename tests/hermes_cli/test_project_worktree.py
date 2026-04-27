@@ -221,3 +221,74 @@ class TestListProjectWorktrees:
         assert "_integration" in names
         assert "frontend" in names
         assert all("cat2" not in str(p) for p in paths)
+
+
+# =============================================================================
+# Drift detection (Codex Medium fix)
+# =============================================================================
+
+
+class TestHeadDriftDetection:
+    """Idempotent fast path must verify HEAD matches the expected branch.
+
+    Without this, a worktree whose HEAD has been moved to a different
+    branch (e.g. via `git checkout other` from inside the worktree)
+    would be silently accepted and handles returned that misrepresent
+    the actual checked-out branch.
+    """
+
+    def test_integration_drift_raises(self, git_repo):
+        h = ensure_integration_worktree("cat1", "demo")
+        # Drift: switch the worktree to a different branch behind our back.
+        _run(["git", "branch", "other"], cwd=git_repo)
+        _run(["git", "-C", str(h.integration_worktree), "checkout", "other"],
+             cwd=git_repo)
+        # Second call must refuse to silently rebind.
+        with pytest.raises(WorktreeError, match="expected"):
+            ensure_integration_worktree("cat1", "demo")
+
+    def test_stream_drift_raises(self, git_repo):
+        ensure_integration_worktree("cat1", "demo")
+        wt = ensure_stream_worktree("cat1", "demo", "frontend")
+        _run(["git", "branch", "decoy"], cwd=git_repo)
+        _run(["git", "-C", str(wt), "checkout", "decoy"], cwd=git_repo)
+        with pytest.raises(WorktreeError, match="expected"):
+            ensure_stream_worktree("cat1", "demo", "frontend")
+
+
+# =============================================================================
+# Concurrency (Codex Medium fix)
+# =============================================================================
+
+
+class TestConcurrentEnsure:
+    """Two threads racing on the same project must not corrupt state.
+
+    The in-process per-project lock serializes them; a second caller
+    sees the worktree already created and returns the same handles.
+    """
+
+    def test_two_threads_same_project(self, git_repo):
+        import threading
+
+        results: list = []
+        errors: list = []
+
+        def go():
+            try:
+                results.append(ensure_integration_worktree("cat1", "demo"))
+            except Exception as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        t1 = threading.Thread(target=go)
+        t2 = threading.Thread(target=go)
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        assert errors == [], f"unexpected errors: {errors}"
+        assert len(results) == 2
+        assert results[0] == results[1]
+        # Exactly one worktree registered.
+        registered = [p for p in list_registered_worktrees()
+                      if "_integration" in p.parts]
+        assert len(registered) == 1
