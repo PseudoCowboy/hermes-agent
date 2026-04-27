@@ -199,6 +199,9 @@ async def _rollback_stream(
     no_thread_set = getattr(adapter, "_no_auto_thread_channels", None)
     if isinstance(no_thread_set, set):
         no_thread_set.discard(entry.channel_id)
+    free_set = getattr(adapter, "_orchestration_free_channels", None)
+    if isinstance(free_set, set):
+        free_set.discard(entry.channel_id)
 
     # 4. Delete channel.  Resolve via adapter so we can call .delete().
     try:
@@ -360,6 +363,12 @@ async def _bootstrap_under_lock(
                 no_thread_set = getattr(adapter, "_no_auto_thread_channels", None)
                 if isinstance(no_thread_set, set):
                     no_thread_set.add(channel_id)
+                # Bypass DISCORD_REQUIRE_MENTION for the stream channel so
+                # plain-text operator kickoff messages reach the implementer
+                # without an @mention.
+                free_set = getattr(adapter, "_orchestration_free_channels", None)
+                if isinstance(free_set, set):
+                    free_set.add(channel_id)
 
                 # Step 4: build the per-stream session.  Channel-scoped key
                 # mirrors project_bootstrap: drop user_id so all collaborators
@@ -441,6 +450,11 @@ async def _bootstrap_under_lock(
                     )
                     if isinstance(no_thread_set, set):
                         no_thread_set.discard(partial_channel_id)
+                    free_set = getattr(
+                        adapter, "_orchestration_free_channels", None,
+                    )
+                    if isinstance(free_set, set):
+                        free_set.discard(partial_channel_id)
                     try:
                         chan = await _resolve_category(
                             adapter, partial_channel_id,

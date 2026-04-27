@@ -501,7 +501,13 @@ async def session_agent_worker(
                     )
 
             result = await asyncio.to_thread(_run_turn)
-            new_history = result.get("conversation_history") if isinstance(result, dict) else None
+            # ``run_agent.AIAgent.run_conversation`` returns the updated
+            # conversation under ``"messages"`` (run_agent.py:9302).  The
+            # earlier ``"conversation_history"`` key never existed —
+            # silently dropped every prior turn, so the orchestrator
+            # forgot the operator's clarification replies and any agent
+            # tool-call results between turns.  Read the correct key.
+            new_history = result.get("messages") if isinstance(result, dict) else None
             if isinstance(new_history, list):
                 history = new_history
 

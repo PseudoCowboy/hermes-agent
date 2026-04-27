@@ -869,6 +869,11 @@ class GatewayRunner:
                     )
                     if isinstance(no_thread_set, set):
                         no_thread_set.discard(str(main_channel_id))
+                    free_set = getattr(
+                        adapter, "_orchestration_free_channels", None
+                    )
+                    if isinstance(free_set, set):
+                        free_set.discard(str(main_channel_id))
                 except Exception:
                     logger.debug(
                         "teardown: failed to drop %s from no-thread set",

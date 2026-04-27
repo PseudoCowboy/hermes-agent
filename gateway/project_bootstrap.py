@@ -276,6 +276,11 @@ async def bootstrap_new_project(
         no_thread_set = getattr(adapter, "_no_auto_thread_channels", None)
         if isinstance(no_thread_set, set):
             no_thread_set.add(main_channel_id)
+        # Bypass DISCORD_REQUIRE_MENTION for the main channel so plain-text
+        # operator messages reach the orchestrator without an @mention.
+        free_set = getattr(adapter, "_orchestration_free_channels", None)
+        if isinstance(free_set, set):
+            free_set.add(main_channel_id)
 
         # Step 3: build the SessionSource for the new channel and
         # derive its session_key the same way the gateway's normal
@@ -399,6 +404,9 @@ async def bootstrap_new_project(
             no_thread_set = getattr(adapter, "_no_auto_thread_channels", None)
             if isinstance(no_thread_set, set):
                 no_thread_set.discard(created_main_channel_id)
+            free_set = getattr(adapter, "_orchestration_free_channels", None)
+            if isinstance(free_set, set):
+                free_set.discard(created_main_channel_id)
         # Category cleanup: same pattern.  Without the id-based fallback,
         # a failure between create_project_category and _resolve_category
         # would orphan the category forever.

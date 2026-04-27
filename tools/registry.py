@@ -387,6 +387,26 @@ class ToolRegistry:
                         ctx_val = getattr(ctx, key, None)
                         if ctx_val:
                             args[key] = ctx_val
+                # ``project_name`` aliasing — workflow tool schemas accept
+                # ``project_name`` (a free-text human name that gets
+                # ``slugify()``'d), but the bootstrap-set identifier on
+                # the session is ``slug``. Without aliasing, the agent
+                # has to guess the slug or invent its own project_name,
+                # which lands writes in a parallel project directory and
+                # silently breaks the post-turn approval-marker hook
+                # (which only looks under ``session.slug``).
+                #
+                # Strategy: when the schema declares ``project_name`` and
+                # the agent left it blank/missing, fill it from
+                # ``ctx.slug``. ``slugify(slug)`` is idempotent so the
+                # downstream ``_handle_*(project_name=...)`` resolves to
+                # the same on-disk path the bootstrap chose.
+                if "project_name" in declared:
+                    supplied_pn = args.get("project_name")
+                    if supplied_pn in (None, ""):
+                        ctx_slug = getattr(ctx, "slug", None)
+                        if ctx_slug:
+                            args["project_name"] = ctx_slug
             # Sandbox interception (P7a-2).  If the implementer worker
             # bound a SandboxedToolset on the context, route any tool the
             # sandbox claims through it.  The sandbox validates path args

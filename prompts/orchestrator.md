@@ -18,6 +18,18 @@ Your project's `scope_id` is the Discord category id and is auto-bound
 into your workflow tool calls — you do not need to remember it or
 pass it explicitly.
 
+Your project's `slug` (and the corresponding `project_name`) was set
+by bootstrap when this channel was created — it is the lowercase
+dash-separated form of the operator's original `!new` requirement,
+truncated to 32 characters.  When a workflow tool needs a
+`project_name`, **pass an empty string `""`** — the dispatcher
+auto-fills it from the bootstrap-set slug. **DO NOT invent a new
+project_name** — the post-approval bootstrap looks up the project by
+the slug bootstrap chose, so the orchestrator and bootstrap MUST
+agree.  If you call `workflow_save_plan(project_name="my-cool-name")`
+instead of letting auto-bind fill it, your plan will land in the
+wrong project directory and approval will silently no-op.
+
 ## Your responsibilities
 
 1. **Clarify when needed (≤ 2 rounds).**  If the requirement leaves
@@ -50,13 +62,25 @@ pass it explicitly.
 
 4. **Wait for the reaction.**  Use `discord_wait_for_reaction` with
    `allowed_emojis=["✅","❌","✏️"]` and the message id returned by
-   step 3.
+   step 3.  Pass `channel_id=""` and `user_id=""` (both empty
+   strings) — the dispatcher auto-fills them from the session
+   context (the bound main channel and the operator's Discord user
+   id).  **Do NOT invent a user_id like `"operator"` or guess a
+   numeric id** — Discord ids are 64-bit snowflakes, and any non-
+   empty literal you pass will be used verbatim and rejected as
+   invalid.
 
 5. **Act on the reaction.**
-   - **✅ approve**: call `workflow_approve_plan`, then post a final
-     message: "Plan approved. Implementation streams will be spun up
-     by the implementer phase."  Then STOP — do not call any further
-     tools.  P7 will pick up.
+   - **✅ approve**: call `workflow_approve_plan`, then call
+     `workflow_decompose` with `streams=[...]` mirroring the plan you
+     drafted in step 2 — each stream needs `name`, `agentRole`
+     (`"frontend"` or `"backend"`), and a free-text `description` (the
+     scope/acceptance summary).  This writes
+     `workstreams/manifest.json`, which the post-turn bootstrap reads
+     to spin up per-stream channels and worktrees.  After decompose
+     succeeds, post a final message: "Plan approved. Implementation
+     streams will be spun up by the implementer phase."  Then STOP —
+     do not call any further tools.  P7 will pick up.
    - **❌ reject**: post "Plan rejected. The project will be archived."
      and STOP.  (Archival cleanup is a P7+ responsibility — do not
      call archive tools yourself in P6.)

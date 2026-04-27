@@ -463,6 +463,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Discord thread — the long-lived orchestrator session is keyed
         # by the parent channel id, not a thread id.
         self._no_auto_thread_channels: set = set()
+        # Channels where DISCORD_REQUIRE_MENTION is bypassed at runtime —
+        # operator messages in orchestrator main channels and stream
+        # channels are routed to the bot without an explicit @mention.
+        # Registered by ``project_bootstrap`` (main channel) and
+        # ``stream_bootstrap`` (per-stream channels).
+        self._orchestration_free_channels: set = set()
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2340,7 +2346,11 @@ class DiscordAdapter(BasePlatformAdapter):
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            # Orchestration channels (main + stream) bypass the mention
+            # requirement so plain-text messages from operators reach the
+            # gateway. Registered by project_bootstrap / stream_bootstrap.
+            is_orchestration_channel = bool(channel_ids & self._orchestration_free_channels)
+            if require_mention and not is_free_channel and not in_bot_thread and not is_orchestration_channel:
                 if self._client.user not in message.mentions:
                     return
 
