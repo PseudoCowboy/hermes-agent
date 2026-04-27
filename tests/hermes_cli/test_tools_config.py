@@ -66,6 +66,54 @@ def test_get_platform_tools_allows_workflow_readonly_everywhere():
     assert "workflow-readonly" in enabled
 
 
+def test_get_platform_tools_filters_split_workflow_mutating_outside_cli_and_discord():
+    """P4 split: ``workflow-orchestrator-mutating`` and
+    ``workflow-stream-mutating`` must inherit the same platform gate as
+    the legacy ``workflow-mutating`` composite — otherwise a manual
+    saved config could bypass the gate by naming the new buckets directly.
+    """
+    config = {
+        "platform_toolsets": {
+            "telegram": [
+                "workflow-orchestrator-mutating",
+                "workflow-stream-mutating",
+                "discord-orchestration-stream",
+                "web",
+            ]
+        }
+    }
+
+    enabled = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+
+    assert "web" in enabled
+    assert "workflow-orchestrator-mutating" not in enabled
+    assert "workflow-stream-mutating" not in enabled
+    assert "discord-orchestration-stream" not in enabled
+
+
+def test_get_platform_tools_keeps_split_workflow_mutating_on_discord():
+    config = {
+        "platform_toolsets": {
+            "discord": [
+                "workflow-orchestrator-mutating",
+                "workflow-stream-mutating",
+                "discord-orchestration-stream",
+                "discord-orchestration-admin",
+            ]
+        }
+    }
+
+    enabled = _get_platform_tools(config, "discord", include_default_mcp_servers=False)
+
+    for ts in (
+        "workflow-orchestrator-mutating",
+        "workflow-stream-mutating",
+        "discord-orchestration-stream",
+        "discord-orchestration-admin",
+    ):
+        assert ts in enabled, f"{ts} should be allowed on discord"
+
+
 def test_platform_toolset_summary_uses_explicit_platform_list():
     config = {}
 

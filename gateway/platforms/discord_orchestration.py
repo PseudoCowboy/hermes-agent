@@ -465,9 +465,23 @@ def set_active_adapter(adapter: Any) -> None:
     _active_adapter = adapter
 
 
-def clear_active_adapter() -> None:
-    """Unregister the active adapter (called from adapter teardown / tests)."""
+def clear_active_adapter(expected: Optional[Any] = None) -> None:
+    """Unregister the active adapter (called from adapter teardown / tests).
+
+    If *expected* is provided, only clears the singleton if the currently
+    registered adapter is the same object.  This guards against a stale
+    ``disconnect()`` from adapter A clobbering adapter B's registration —
+    a real concern during reconnect / restart sequences where the old
+    adapter instance hasn't finished tearing down by the time the new one
+    has already called :func:`set_active_adapter`.
+
+    Pass ``expected=None`` (the default) for unconditional clear, used by
+    tests that want a clean slate regardless of who's registered.
+    """
     global _active_adapter
+    if expected is not None and _active_adapter is not expected:
+        # Not our handle anymore — leave the live one alone.
+        return
     _active_adapter = None
 
 

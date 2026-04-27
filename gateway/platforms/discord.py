@@ -730,11 +730,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Drop our handle from the orchestration singleton so subsequent
         # tool dispatches fail fast instead of NPE'ing on the closed client.
+        # Pass ``expected=self`` so a late teardown can't clobber a fresh
+        # adapter that has already taken over the singleton.
         try:
             from gateway.platforms.discord_orchestration import (
                 clear_active_adapter,
             )
-            clear_active_adapter()
+            clear_active_adapter(expected=self)
         except Exception:  # pragma: no cover - defensive
             pass
 

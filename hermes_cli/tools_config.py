@@ -92,6 +92,17 @@ CONFIGURABLE_TOOLSETS = [
 # Built-in toolsets that are only valid on specific platforms.
 _PLATFORM_TOOLSET_ALLOWLISTS = {
     "workflow-mutating": {"cli", "discord"},
+    # P4 split: orchestrator and stream halves of `workflow-mutating`
+    # inherit the same allowlist so a manual `platform_toolsets.<other>:
+    # [workflow-stream-mutating]` config can't bypass the gate.
+    "workflow-orchestrator-mutating": {"cli", "discord"},
+    "workflow-stream-mutating": {"cli", "discord"},
+    # Discord orchestration tools are only meaningful when the runtime
+    # has a live DiscordAdapter to register itself as the active
+    # singleton — gate them to the discord platform.
+    "discord-orchestration-admin": {"discord"},
+    "discord-orchestration-stream": {"discord"},
+    "discord-orchestration": {"discord"},
 }
 
 # Legacy toolset names that were previously exposed as configurable entries
@@ -602,10 +613,20 @@ def _get_platform_tools(
     # For example: configs saved before the `workflow` → `workflow-readonly` /
     # `workflow-mutating` split may still list `workflow` under non-CLI/Discord
     # platforms. Silently drop those here so they don't reach the gateway.
+    #
+    # We also consult ``_PLATFORM_TOOLSET_ALLOWLISTS`` because the P4 split
+    # introduced new built-in passthrough names (workflow-orchestrator-mutating,
+    # workflow-stream-mutating, discord-orchestration*) that aren't in
+    # CONFIGURABLE_TOOLSETS but still need the same platform gating as
+    # ``workflow-mutating`` — otherwise a manual platform_toolsets entry
+    # like ``telegram: [workflow-stream-mutating]`` would slip through.
     explicit_passthrough = {
         ts
         for ts in explicit_passthrough
-        if platform in _LEGACY_PLATFORM_GATED_TOOLSETS.get(ts, {platform})
+        if (
+            platform in _LEGACY_PLATFORM_GATED_TOOLSETS.get(ts, {platform})
+            and platform in _PLATFORM_TOOLSET_ALLOWLISTS.get(ts, {platform})
+        )
     }
 
     # MCP servers are expected to be available on all platforms by default.
@@ -675,6 +696,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         if entry not in configurable_keys
         and entry not in platform_default_keys
         and platform in _LEGACY_PLATFORM_GATED_TOOLSETS.get(entry, {platform})
+        and platform in _PLATFORM_TOOLSET_ALLOWLISTS.get(entry, {platform})
     }
 
     # Merge preserved entries with new enabled toolsets

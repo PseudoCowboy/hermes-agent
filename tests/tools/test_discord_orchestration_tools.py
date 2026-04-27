@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -424,3 +425,199 @@ class TestWaitForReaction:
              "allowed_emojis": "\u2705"},  # not a list
         )
         assert "error" in out
+
+
+# =============================================================================
+# Regression: production registration (Codex P4 H1)
+# =============================================================================
+
+
+class TestProductionRegistration:
+    """Importing ``model_tools`` (the production discovery entry point)
+    must register every Discord orchestration tool.  Previously the
+    module was missing from ``_discover_tools()`` so the tools only
+    appeared because this test file force-imported them at the top."""
+
+    def test_model_tools_registers_discord_tools(self):
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+
+        for name in (
+            "discord_create_project_category",
+            "discord_create_stream_channel",
+            "discord_archive_project_category",
+            "discord_post_message",
+            "discord_react_to_message",
+            "discord_wait_for_reaction",
+        ):
+            assert registry.get_toolset_for_tool(name) is not None, (
+                f"{name} should be registered after import model_tools"
+            )
+
+
+# =============================================================================
+# Regression: owner-aware clear_active_adapter (Codex P4 M1)
+# =============================================================================
+
+
+class TestOwnerAwareClear:
+    def test_stale_clear_does_not_clobber_live_adapter(self):
+        from gateway.platforms.discord_orchestration import (
+            clear_active_adapter,
+            get_active_adapter,
+            set_active_adapter,
+        )
+
+        a = object()
+        b = object()
+        set_active_adapter(a)
+        set_active_adapter(b)
+
+        # A late teardown from the old adapter must not clear B.
+        clear_active_adapter(expected=a)
+        assert get_active_adapter() is b
+
+        # Owner match clears as expected.
+        clear_active_adapter(expected=b)
+        with pytest.raises(OrchestrationError):
+            get_active_adapter()
+
+    def test_unconditional_clear_still_works(self):
+        from gateway.platforms.discord_orchestration import (
+            clear_active_adapter,
+            get_active_adapter,
+            set_active_adapter,
+        )
+
+        set_active_adapter(object())
+        clear_active_adapter()  # no expected — unconditional
+        with pytest.raises(OrchestrationError):
+            get_active_adapter()
+
+
+# =============================================================================
+# Regression: stream-handler error wrapping (Codex P4 M2)
+# =============================================================================
+
+
+class _FakeChannelExploding(_FakeChannel):
+    async def send(self, content: str):  # type: ignore[override]
+        # Simulate a discord.py-style raw error escaping past our wrapper.
+        raise RuntimeError("403 Forbidden (boom)")
+
+
+class TestStreamHandlerErrorWrapping:
+    def test_post_message_wraps_unexpected_exception(self, adapter):
+        ch = _FakeChannelExploding(id=7777)
+        adapter.guild.extra_channels[7777] = ch
+        out = _dispatch(
+            "discord_post_message",
+            {"channel_id": "7777", "content": "hi"},
+        )
+        assert "error" in out
+        # Wrapper preserves the original type name + message so callers
+        # can still triage, but the contract is uniform: an
+        # OrchestrationError-shaped string.
+        assert "RuntimeError" in out["error"]
+        assert "Forbidden" in out["error"]
+
+
+# =============================================================================
+# Regression: cross-thread loop affinity for _run_sync (Codex P4 H2)
+# =============================================================================
+
+
+class _FakeClientWithLoop(_FakeClient):
+    """Fake whose .loop is a real, running event loop in a side thread.
+
+    The real DiscordAdapter starts ``_client.start()`` as a task on the
+    gateway loop; tool handlers are then dispatched from worker threads
+    and must marshal coroutines back to that loop with
+    ``asyncio.run_coroutine_threadsafe``.  This fake recreates the same
+    cross-thread shape so we can exercise the marshalling path.
+    """
+
+    def __init__(self, guild) -> None:
+        super().__init__(guild)
+        self.loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._run_loop, daemon=True, name="fake-client-loop"
+        )
+        self._loop_thread.start()
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def stop(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self._loop_thread.join(timeout=2.0)
+
+
+@pytest.fixture()
+def cross_thread_adapter():
+    """Adapter whose client has a live loop in another thread."""
+    fake = _FakeAdapter()
+    fake._client = _FakeClientWithLoop(fake.guild)
+    set_active_adapter(fake)
+    try:
+        yield fake
+    finally:
+        clear_active_adapter()
+        try:
+            fake._client.stop()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
+class TestCrossThreadLoopAffinity:
+    def test_post_message_marshals_to_client_loop(self, cross_thread_adapter):
+        """The send() coroutine must execute on the client's loop, not
+        on a fresh asyncio.run() loop."""
+        observed_loops: list = []
+
+        class _Channel:
+            id = 8888
+
+            async def send(self, content):
+                observed_loops.append(asyncio.get_running_loop())
+                return _FakeMessage(id=42, content=content)
+
+        cross_thread_adapter.guild.extra_channels[8888] = _Channel()
+        out = _dispatch(
+            "discord_post_message",
+            {"channel_id": "8888", "content": "hi"},
+        )
+        assert "error" not in out, out
+        assert len(observed_loops) == 1
+        assert observed_loops[0] is cross_thread_adapter._client.loop
+
+    def test_wait_for_reaction_blocks_until_loop_thread_delivers(
+        self, cross_thread_adapter
+    ):
+        """The waiter resolves on the gateway loop; the dispatcher
+        thread must observe that result through the threadsafe future."""
+
+        # Pre-arm the waiter on the loop's own thread (matches how the
+        # real reaction handler runs from on_raw_reaction_add).
+        def _deliver_after_delay() -> None:
+            import time as _t
+            _t.sleep(0.05)
+            cross_thread_adapter._client.loop.call_soon_threadsafe(
+                lambda: cross_thread_adapter._reaction_waiter.deliver(
+                    channel_id=10, message_id=20, user_id=30, emoji="\u2705",
+                )
+            )
+
+        t = threading.Thread(target=_deliver_after_delay)
+        t.start()
+        try:
+            out = _dispatch(
+                "discord_wait_for_reaction",
+                {"channel_id": "10", "message_id": "20", "user_id": "30",
+                 "timeout_s": 2.0},
+            )
+        finally:
+            t.join(timeout=2.0)
+        assert out.get("timed_out") is False, out
+        assert out["emoji"] == "\u2705"

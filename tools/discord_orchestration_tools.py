@@ -29,6 +29,7 @@ just the first half of §4's enforcement story.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 from typing import Any, Optional
@@ -113,18 +114,39 @@ def _err(exc: Exception) -> str:
     """Return a JSON error body in the same shape as the registry's
     own error envelope so callers see a uniform contract regardless of
     whether the failure was caught here or by ``ToolRegistry.dispatch``.
+
+    Non-:class:`OrchestrationError` exceptions (e.g. raw ``discord.py``
+    ``Forbidden`` / ``NotFound`` / ``HTTPException``) are wrapped before
+    being serialized, so every handler in this module presents the same
+    error contract as the P3 admin helpers.
     """
+    if not isinstance(exc, OrchestrationError):
+        wrapped = OrchestrationError(
+            f"{type(exc).__name__}: {exc}"
+        )
+        wrapped.__cause__ = exc
+        exc = wrapped
     return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
-def _run_sync(coro: Any) -> Any:
-    """Run *coro* to completion from a sync handler.
+def _run_sync(coro: Any, *, timeout: float = 30.0) -> Any:
+    """Run *coro* to completion from a sync handler, on the adapter's loop.
 
-    The registry calls handlers synchronously by default.  The P3 helpers
-    are async because they call discord.py coroutines; we bridge with a
-    fresh event loop when there is no running one, and refuse if a loop
-    is already running on this thread (that would deadlock).
+    The registry calls handlers synchronously from worker threads (see
+    ``model_tools.run_async``).  Discord.py objects are bound to the
+    gateway loop (``adapter._client.loop``) — driving them from a fresh
+    ``asyncio.run()`` on this thread would deadlock or break loop
+    affinity (``loop_id`` checks inside ``ClientWebSocketResponse``,
+    locks created on the wrong loop, etc.).  So we marshal *coro* to the
+    client's loop with :func:`asyncio.run_coroutine_threadsafe` and
+    block on the result.
+
+    For the special case where there is no live adapter loop yet
+    (``ReactionWaiter`` tests use a fake adapter without a real client),
+    fall back to a fresh ``asyncio.run()`` so the unit tests still work.
     """
+    # Refuse if the calling thread is itself running a loop — we'd
+    # deadlock waiting on a future from inside our own loop.
     try:
         running = asyncio.get_running_loop()
     except RuntimeError:
@@ -134,6 +156,24 @@ def _run_sync(coro: Any) -> Any:
             "discord orchestration tools cannot be dispatched from "
             "inside a running event loop without async support"
         )
+
+    adapter = get_active_adapter()
+    client = getattr(adapter, "_client", None)
+    loop = getattr(client, "loop", None) if client is not None else None
+    if loop is not None and loop.is_running():
+        # Real Discord client: marshal onto its loop.
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise OrchestrationError(
+                f"discord operation timed out after {timeout}s"
+            ) from exc
+
+    # Fallback path used by unit tests with fake adapters whose fake
+    # client has no live loop.  Safe because the fakes don't share state
+    # across loops.
     return asyncio.run(coro)
 
 
