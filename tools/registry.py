@@ -95,6 +95,17 @@ _AUTO_BIND_KEYS = ("scope_id", "slug", "stream_name", "channel_id", "user_id")
 _AUTO_BIND_TOOLSETS: Set[str] = {
     "workflow-orchestrator-mutating",
     "workflow-orchestrator-readonly",
+    # P7a-2 codex review (Important #6): the implementer worker exposes
+    # ``workflow-readonly`` and ``workflow-stream-mutating`` so per-stream
+    # workflow tools (state queries, progress logging) need the same
+    # auto-bind treatment as orchestrator tools — otherwise the agent
+    # has to supply ``project_name`` / ``stream`` itself, which is both
+    # awkward and easy to get wrong. Auto-bind only fills *missing* keys
+    # (a malicious explicit value still wins), so this is a UX fix, not
+    # a security boundary; per-stream isolation remains the sandbox's
+    # job for filesystem ops and the merge-queue gate for branch ops.
+    "workflow-readonly",
+    "workflow-stream-mutating",
     "discord-orchestration-admin",
     "discord-orchestration-stream",
 }
