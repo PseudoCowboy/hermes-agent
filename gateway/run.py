@@ -535,6 +535,17 @@ class GatewayRunner:
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
+        # P5: per-channel long-lived agent sessions.  When the
+        # orchestrator (P6+) creates a stream channel it registers a
+        # :class:`LongLivedSession` here; ``_handle_message`` consults
+        # the router on the fast path and short-circuits to
+        # ``session.deliver_message`` instead of running the per-message
+        # agent path.  Sessions for unregistered channels (CLI,
+        # Telegram, Discord-without-orchestrator) fall through to the
+        # existing flow unchanged.
+        from gateway.session_router import SessionRouter
+        self._session_router = SessionRouter()
+
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
@@ -1836,6 +1847,55 @@ class GatewayRunner:
         # forwarded it to the user; now the user's reply goes back via
         # .update_response so the update process can continue.
         _quick_key = self._session_key_for_source(source)
+
+        # P5: long-lived session fast-path.  If the orchestrator (P6+)
+        # has registered a LongLivedSession for this channel, hand the
+        # event to it and short-circuit; the session owns the
+        # conversation including clarification one-shot admission.
+        # Unregistered channels fall through to the existing per-message
+        # agent path unchanged.
+        #
+        # Carve-outs: even when a session is registered, slash commands
+        # and pending /update prompt replies must continue to hit their
+        # existing handlers.  Routing /stop, /new, /approve, /deny,
+        # /reset etc. into the session's inbox would silently disable
+        # the user's only escape hatches; the /update response path is
+        # outside-of-agent infrastructure that shouldn't see this event
+        # as conversational input.
+        _router = getattr(self, "_session_router", None)
+        if _router is not None:
+            _session = _router.get(_quick_key)
+            if _session is not None:
+                _has_update_pending = bool(
+                    getattr(self, "_update_prompt_pending", {}).get(_quick_key)
+                )
+                _is_command = bool(event.get_command())
+                if not _is_command and not _has_update_pending:
+                    accepted = await _session.deliver_message(event)
+                    if accepted:
+                        return None
+                    # Distinguish self-message drops (silent by design —
+                    # the bot's own messages bouncing back must not
+                    # generate a reply) from inbox-full drops (user
+                    # deserves a signal that their message was lost).
+                    _is_self = False
+                    _bot_id = _session.bot_user_id
+                    if _bot_id is not None:
+                        _author_id = _session._extract_author_id(event)
+                        try:
+                            _is_self = (
+                                _author_id is not None
+                                and int(_author_id) == int(_bot_id)
+                            )
+                        except (TypeError, ValueError):
+                            _is_self = False
+                    if _is_self:
+                        return None
+                    return (
+                        "⚠️ Message dropped — session inbox is full. "
+                        "Please wait for the agent to catch up and retry."
+                    )
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()

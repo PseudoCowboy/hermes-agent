@@ -127,6 +127,24 @@ class ReactionWaiter:
     def __init__(self) -> None:
         self._pending: Dict[ReactionKey, _PendingWait] = {}
         self._lock = asyncio.Lock()
+        # Late-bound by ``DiscordAdapter.on_ready`` once the bot's own
+        # user id is known (it isn't available at construction time —
+        # the discord.py client hasn't logged in yet).  P5 stores it
+        # here so :class:`gateway.session_router.LongLivedSession` and
+        # other consumers can read it via the active adapter without
+        # threading the value through every call site.  The
+        # :func:`install_reaction_handler` continues to filter
+        # self-reactions via its own ``bot_user_id`` argument; this
+        # attribute is purely for downstream consumers of the waiter.
+        self.bot_user_id: Optional[int] = None
+
+    def set_bot_user_id(self, bot_user_id: Optional[int]) -> None:
+        """Store the bot's own discord user id (called from ``on_ready``).
+
+        Accepts ``None`` so the on_ready path doesn't need to special-case
+        a missing ``client.user`` (rare but observable during reconnects).
+        """
+        self.bot_user_id = bot_user_id
 
     # ------------------------------------------------------------------
     # Caller side

@@ -438,6 +438,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # incoming reactions to it.
         from gateway.platforms.discord_orchestration import ReactionWaiter
         self._reaction_waiter = ReactionWaiter()
+        # Bot's own discord user id, populated in ``on_ready`` once the
+        # client has logged in.  Consumed by long-lived sessions (P5+)
+        # to drop self-messages without threading the value through
+        # every call site, and bound into ``_reaction_waiter`` so the
+        # waiter can suppress self-reactions for downstream consumers.
+        self._bot_user_id: Optional[int] = None
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -550,6 +556,22 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
+
+                # Capture our own bot user id now that the client has
+                # logged in.  Late-bind into the reaction waiter so any
+                # downstream consumer that reads ``waiter.bot_user_id``
+                # sees the correct value; long-lived sessions (P5+) read
+                # this off ``adapter.bot_user_id`` to drop self-messages.
+                #
+                # ``client.user`` can be transiently ``None`` on a fast
+                # reconnect race; preserve the previously captured id in
+                # that case so downstream self-suppression doesn't blink
+                # off.  The disconnect path handles the explicit clear.
+                bot_user = adapter_self._client.user
+                new_bot_user_id = bot_user.id if bot_user is not None else None
+                if new_bot_user_id is not None:
+                    adapter_self._bot_user_id = new_bot_user_id
+                    adapter_self._reaction_waiter.set_bot_user_id(new_bot_user_id)
 
                 # Sync slash commands with Discord
                 try:
@@ -709,6 +731,17 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
             return False
 
+    @property
+    def bot_user_id(self) -> Optional[int]:
+        """Bot's own discord user id, set in ``on_ready``.
+
+        ``None`` until the client has logged in or after ``disconnect``.
+        Long-lived sessions read this via the active-adapter singleton
+        to drop self-messages without threading the value through every
+        call site.
+        """
+        return self._bot_user_id
+
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
         # Clean up all active voice connections before closing the client
@@ -727,6 +760,12 @@ class DiscordAdapter(BasePlatformAdapter):
         self._running = False
         self._client = None
         self._ready_event.clear()
+        # Forget our captured bot user id — a future reconnect will
+        # repopulate it in ``on_ready``.  Leaving stale ids around could
+        # let downstream consumers drop messages that aren't actually
+        # from this (now-disconnected) adapter.
+        self._bot_user_id = None
+        self._reaction_waiter.set_bot_user_id(None)
 
         # Drop our handle from the orchestration singleton so subsequent
         # tool dispatches fail fast instead of NPE'ing on the closed client.
