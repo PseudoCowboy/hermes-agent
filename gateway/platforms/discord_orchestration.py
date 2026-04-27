@@ -271,11 +271,18 @@ async def create_project_category(
         cat = await guild.create_category(
             name, overwrites=overwrites or {}, reason=reason
         )
+        # Shape extraction inside the wrapper too — a duck-typed backend
+        # that doesn't return the expected fields is an adapter contract
+        # break, not a Python error to leak.
+        category_id = str(cat.id)
+        category_name = cat.name
+    except OrchestrationError:
+        raise
     except Exception as exc:
         raise OrchestrationError(
             f"failed to create category {name!r}: {exc}"
         ) from exc
-    return CreatedCategory(category_id=str(cat.id), name=cat.name)
+    return CreatedCategory(category_id=category_id, name=category_name)
 
 
 async def create_stream_channel(
@@ -300,15 +307,21 @@ async def create_stream_channel(
         ch = await category.create_text_channel(
             name, topic=topic, overwrites=overwrites or {}, reason=reason
         )
+        # Shape extraction inside the wrapper — see create_project_category.
+        channel_id = str(ch.id)
+        channel_name = ch.name
+        category_id = str(getattr(category, "id", "?"))
+    except OrchestrationError:
+        raise
     except Exception as exc:
         raise OrchestrationError(
             f"failed to create channel {name!r} in category "
             f"{getattr(category, 'id', '?')}: {exc}"
         ) from exc
     return CreatedChannel(
-        channel_id=str(ch.id),
-        category_id=str(getattr(category, "id", "?")),
-        name=ch.name,
+        channel_id=channel_id,
+        category_id=category_id,
+        name=channel_name,
     )
 
 
@@ -336,7 +349,17 @@ async def archive_project_category(
     # so we don't want to iterate while mutating.
     channels = list(getattr(category, "channels", []) or [])
     for ch in channels:
-        if not keep(ch):
+        # The predicate is caller-supplied — wrap its failures in
+        # OrchestrationError so the contract ("this layer raises only
+        # OrchestrationError") holds.
+        try:
+            keep_ch = keep(ch)
+        except Exception as exc:
+            raise OrchestrationError(
+                f"channel_filter raised for channel "
+                f"{getattr(ch, 'id', '?')}: {exc}"
+            ) from exc
+        if not keep_ch:
             skipped_channels.append(str(getattr(ch, "id", "?")))
             continue
         try:

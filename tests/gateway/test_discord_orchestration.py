@@ -375,3 +375,130 @@ class TestArchiveProjectCategory:
                             delete_should_raise=RuntimeError("forbidden"))
         with pytest.raises(OrchestrationError, match="failed to delete category"):
             await archive_project_category(category=cat)
+
+
+# =============================================================================
+# Error-wrapping contract (Codex P3 follow-up)
+# =============================================================================
+#
+# The adapter contract is: this module raises only OrchestrationError.
+# A duck-typed backend that returns malformed objects, or a caller that
+# supplies a buggy predicate, must NOT leak Python errors past the
+# boundary.
+
+
+class _ShapelessReturn:
+    """A 'category' return object missing .id / .name."""
+
+
+class TestErrorWrapping:
+    @pytest.mark.asyncio
+    async def test_create_category_wraps_missing_id(self):
+        class _Guild:
+            async def create_category(self, name, *, overwrites=None, reason=None):
+                return _ShapelessReturn()
+
+        with pytest.raises(OrchestrationError, match="failed to create category"):
+            await create_project_category(guild=_Guild(), name="x")
+
+    @pytest.mark.asyncio
+    async def test_create_channel_wraps_missing_id(self):
+        class _Cat:
+            id = 7
+            async def create_text_channel(self, name, *, topic=None,
+                                          overwrites=None, reason=None):
+                return _ShapelessReturn()
+
+        with pytest.raises(OrchestrationError, match="failed to create channel"):
+            await create_stream_channel(category=_Cat(), name="frontend")
+
+    @pytest.mark.asyncio
+    async def test_archive_wraps_filter_exception(self):
+        cat = _FakeCategory(id=1, name="x")
+        cat.channels = [_FakeChannel(id=10, name="frontend")]
+
+        def boom(_ch):
+            raise ValueError("predicate exploded")
+
+        with pytest.raises(OrchestrationError, match="channel_filter raised"):
+            await archive_project_category(category=cat, channel_filter=boom)
+        # The raise happened before any delete attempt.
+        assert cat.channels[0].delete_calls == []
+        assert cat.delete_calls == []
+
+
+# =============================================================================
+# Cross-thread delivery + cleanup races (Codex P3 follow-up)
+# =============================================================================
+
+
+class TestCrossThreadDelivery:
+    """Reactions arrive on the gateway's discord.py loop, but the waiter
+    may be running on a different orchestrator loop. The advertised
+    contract is that ``deliver()`` is safe to call from any thread.
+    """
+
+    @pytest.mark.asyncio
+    async def test_delivery_from_real_thread_resolves_wait(self):
+        import threading
+
+        w = ReactionWaiter()
+        delivered = threading.Event()
+
+        def deliver_from_thread():
+            # Tiny sleep so the wait is registered before we deliver.
+            import time as _time
+            _time.sleep(0.02)
+            ok = w.deliver(channel_id=10, message_id=20, user_id=30,
+                           emoji="\u2705")
+            if ok:
+                delivered.set()
+
+        t = threading.Thread(target=deliver_from_thread)
+        t.start()
+        try:
+            emoji = await w.wait(10, 20, 30, timeout=2.0)
+        finally:
+            t.join(timeout=2.0)
+        assert delivered.is_set(), "deliver() must have accepted the event"
+        assert emoji == "\u2705"
+        assert w.pending_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_deliver_after_timeout_is_a_noop(self):
+        """Late deliver (after the waiter has timed out and cleared) must
+        not raise and must not resurrect any state.
+        """
+        w = ReactionWaiter()
+        with pytest.raises(asyncio.TimeoutError):
+            await w.wait(10, 20, 30, timeout=0.05)
+        # Now deliver after the wait is gone — should be a clean False.
+        accepted = w.deliver(channel_id=10, message_id=20, user_id=30,
+                             emoji="\u2705")
+        assert accepted is False
+        assert w.pending_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_deliver_during_concurrent_cleanup_is_safe(self):
+        """Race the in-flight delivery against the wait being cancelled.
+
+        Either outcome is acceptable (resolved-with-emoji OR cancelled),
+        but the waiter must not raise InvalidStateError, must not leak
+        the pending entry, and must not deadlock.
+        """
+        w = ReactionWaiter()
+        wait_task = asyncio.create_task(w.wait(10, 20, 30, timeout=1.0))
+        await asyncio.sleep(0.01)
+        # Fire delivery and cancel in the same tick.
+        accepted = w.deliver(channel_id=10, message_id=20, user_id=30,
+                             emoji="\u2705")
+        wait_task.cancel()
+        try:
+            result = await wait_task
+        except asyncio.CancelledError:
+            result = None
+        # Either path is fine; both must leave the registry clean.
+        assert w.pending_count() == 0
+        assert accepted in (True, False)
+        if result is not None:
+            assert result == "\u2705"
