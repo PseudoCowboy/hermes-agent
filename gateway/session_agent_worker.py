@@ -107,21 +107,37 @@ def _construct_agent_for_session(
     enabled_toolsets = PERSONA_TOOLSETS.get(persona, ORCHESTRATOR_TOOLSETS)
 
     # Resolve model + runtime kwargs the same way the per-message
-    # agent path does.  ``_resolve_turn_agent_config`` is the canonical
-    # entrypoint and applies fallback model + provider routing rules.
-    # We pass an empty message because the resolver only inspects the
-    # config + runtime, not the message content.
-    model = runner.config.model
-    runtime_kwargs: Dict[str, Any] = {}
+    # agent path does (gateway/run.py around line ~7061).  The runner
+    # needs *both*:
+    #   1. ``_resolve_runtime_agent_kwargs()`` to pull provider creds /
+    #      base_url / api_mode from ~/.hermes/config.yaml + auth pool.
+    #      Skipping this leaves provider=None,base_url=None and AIAgent
+    #      silently falls through to https://api.anthropic.com which
+    #      returns 401 "No cookie auth credentials found".
+    #   2. ``_resolve_turn_agent_config(message, model, runtime_kwargs)``
+    #      on top, to apply optional smart-routing overrides.
+    #
+    # ``GatewayConfig`` itself does NOT expose a ``.model`` attribute —
+    # the model lives in ``~/.hermes/config.yaml`` and is resolved via
+    # ``_resolve_gateway_model``.
+    from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+    model = _resolve_gateway_model()
+    try:
+        runtime_kwargs: Dict[str, Any] = _resolve_runtime_agent_kwargs()
+    except Exception:
+        logger.debug(
+            "could not resolve runtime provider for %s; AIAgent will use defaults",
+            session.session_key, exc_info=True,
+        )
+        runtime_kwargs = {}
     try:
         turn_route = runner._resolve_turn_agent_config("", model, runtime_kwargs)
         model = turn_route.get("model", model)
         runtime_kwargs = turn_route.get("runtime", runtime_kwargs)
     except Exception:
-        # _resolve_turn_agent_config is internal — fall back to bare
-        # model resolution if its signature changes.  Worst case the
-        # agent uses the global default.
-        logger.debug("could not resolve turn agent config for %s; using bare model",
+        # _resolve_turn_agent_config is internal — fall back to the
+        # already-resolved runtime if its signature changes.
+        logger.debug("could not resolve turn agent config for %s; using bare runtime",
                      session.session_key, exc_info=True)
 
     return AIAgent(
