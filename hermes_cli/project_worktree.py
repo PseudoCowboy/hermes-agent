@@ -123,13 +123,30 @@ def _validate_segment(value: str, *, label: str) -> str:
 
 
 def _repo_root() -> Path:
-    """Return the enclosing git repo root (CWD-relative).
+    """Return the *primary* repo root regardless of caller cwd.
 
-    Uses ``git rev-parse --show-toplevel``. Tests run with ``monkeypatch``
-    chdir'd into a tmp repo so this picks up the test repo.
+    Uses ``git rev-parse --git-common-dir`` (the parent of which is the
+    primary repo's working tree) rather than ``--show-toplevel``.
+
+    *Why:* ``--show-toplevel`` returns the *current* working tree's root.
+    Inside a linked worktree (e.g. ``.worktrees/<scope>/<slug>/_integration``)
+    that resolves to the linked tree itself, so a caller running there
+    would derive ``<linked_tree>/.worktrees/<scope>/...`` — a *nested*
+    `.worktrees` tree, breaking idempotency and leaking state out of the
+    primary repo.  ``--git-common-dir`` always points at the shared
+    `.git` directory of the primary repo, so its parent is the primary
+    working tree.
+
+    Tests run with ``monkeypatch`` chdir'd into a tmp repo so this picks
+    up the test repo.
     """
-    out = _run_git(["rev-parse", "--show-toplevel"], cwd=Path.cwd())
-    root = Path(out.strip())
+    out = _run_git(["rev-parse", "--git-common-dir"], cwd=Path.cwd())
+    common = Path(out.strip())
+    if not common.is_absolute():
+        # In the primary repo ``git`` returns ``.git``; resolve relative
+        # to the cwd it was invoked under.
+        common = (Path.cwd() / common).resolve()
+    root = common.parent
     if not root.is_dir():
         raise WorktreeError(f"git rev-parse returned invalid repo root: {root!r}")
     return root

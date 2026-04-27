@@ -292,3 +292,37 @@ class TestConcurrentEnsure:
         registered = [p for p in list_registered_worktrees()
                       if "_integration" in p.parts]
         assert len(registered) == 1
+
+
+# =============================================================================
+# Repo-root derivation inside a linked worktree (Codex Medium fix)
+# =============================================================================
+
+
+class TestRepoRootInsideLinkedWorktree:
+    """Calls from inside a linked worktree must still resolve the *primary*
+    repo root.
+
+    Without ``--git-common-dir``, ``--show-toplevel`` would return the
+    linked worktree's own root, and the helper would derive a *nested*
+    ``.worktrees`` tree under the linked worktree — silently leaking
+    state out of the primary repo and breaking idempotency.
+    """
+
+    def test_ensure_from_inside_worktree_uses_primary_root(self, git_repo, monkeypatch):
+        h = ensure_integration_worktree("cat1", "demo")
+        # Move cwd into the linked worktree.
+        monkeypatch.chdir(h.integration_worktree)
+        # Re-invoke from inside the linked worktree — should be idempotent
+        # and return the same handles, NOT create a nested .worktrees tree.
+        h2 = ensure_integration_worktree("cat1", "demo")
+        assert h == h2
+        # No nested .worktrees inside the linked worktree.
+        assert not (h.integration_worktree / ".worktrees").exists()
+        # Still exactly one registered integration worktree in the primary repo.
+        registered = [
+            p for p in list_registered_worktrees()
+            if "_integration" in p.parts
+        ]
+        assert len(registered) == 1
+        assert registered[0].resolve() == h.integration_worktree.resolve()
