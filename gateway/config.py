@@ -144,16 +144,26 @@ class PlatformConfig:
     token: Optional[str] = None  # Bot token (Telegram, Discord)
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
-    
+
     # Reply threading mode (Telegram/Slack)
     # - "off": Never thread replies to original message
     # - "first": Only first chunk threads to user's message (default)
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
-    
+
+    # Discord orchestration home channel (P6).
+    # When set, messages of the form "!new <requirement>" posted to this
+    # channel trigger project bootstrap (create category + main channel +
+    # spawn orchestrator agent worker).  Both must be set together —
+    # ``orchestration_guild_id`` is required because category creation
+    # is per-guild and the channel id alone doesn't identify the guild
+    # at config-load time.
+    orchestration_home_channel_id: Optional[str] = None
+    orchestration_guild_id: Optional[str] = None
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "enabled": self.enabled,
@@ -166,20 +176,45 @@ class PlatformConfig:
             result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
+        if self.orchestration_home_channel_id:
+            result["orchestration_home_channel_id"] = self.orchestration_home_channel_id
+        if self.orchestration_guild_id:
+            result["orchestration_guild_id"] = self.orchestration_guild_id
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+
+        # Discord orchestration home (P6) — both required together;
+        # warn if only one is supplied (likely a config typo).
+        orch_channel = data.get("orchestration_home_channel_id")
+        orch_guild = data.get("orchestration_guild_id")
+        if orch_channel is not None:
+            orch_channel = str(orch_channel)
+        if orch_guild is not None:
+            orch_guild = str(orch_guild)
+        if (orch_channel is None) != (orch_guild is None):
+            import logging
+            logging.getLogger(__name__).warning(
+                "PlatformConfig: orchestration_home_channel_id and "
+                "orchestration_guild_id must both be set or both unset; "
+                "got channel=%r guild=%r — orchestration bootstrap will "
+                "be disabled.", orch_channel, orch_guild,
+            )
+            orch_channel = None
+            orch_guild = None
+
         return cls(
             enabled=data.get("enabled", False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
+            orchestration_home_channel_id=orch_channel,
+            orchestration_guild_id=orch_guild,
             extra=data.get("extra", {}),
         )
 

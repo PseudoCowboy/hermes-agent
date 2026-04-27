@@ -791,6 +791,197 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    async def _teardown_long_lived_session_for(self, source: SessionSource) -> None:
+        """Cancel + unregister any LongLivedSession bound to *source*'s channel.
+
+        Called from ``/reset`` and ``/new`` so the per-session orchestrator
+        worker doesn't outlive the user-visible reset.  Best-effort: a
+        missing session, a worker that won't cancel, and a router that
+        doesn't know the key are all no-ops — we never want teardown to
+        block the reset response.
+
+        Probes BOTH the per-user session key (returned by
+        ``_session_key_for_source``) AND the channel-scoped key built by
+        ``project_bootstrap`` (chat_id only, no user_id).  Bootstrap
+        registers under the channel-scoped key, but a stray /reset issued
+        before the home-channel pre-router could go through the per-user
+        path — covering both keeps cleanup symmetric.
+        """
+        router = getattr(self, "_session_router", None)
+        if router is None:
+            return
+
+        keys: List[str] = []
+        try:
+            keys.append(self._session_key_for_source(source))
+        except Exception:
+            pass
+        try:
+            channel_only = SessionSource(
+                platform=source.platform,
+                chat_id=source.chat_id,
+                chat_type=getattr(source, "chat_type", "group"),
+                user_id=None,
+                user_name=None,
+            )
+            ch_key = self._session_key_for_source(channel_only)
+            if ch_key not in keys:
+                keys.append(ch_key)
+        except Exception:
+            pass
+
+        for key in keys:
+            try:
+                session = router.get(key)
+            except Exception:
+                session = None
+            if session is None:
+                continue
+            # Mark closed BEFORE cancelling so a worker-thread agent
+            # turn that's still running can observe ``session.closed``
+            # and short-circuit instead of posting late status to the
+            # (possibly-deleted) main channel.
+            session.closed = True
+            in_flight = getattr(session, "_in_flight", None)
+            if in_flight is not None and not in_flight.done():
+                in_flight.cancel()
+                try:
+                    # Bound the wait — a misbehaving worker shouldn't
+                    # hold up /reset's user-visible response.
+                    await asyncio.wait_for(in_flight, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    pass
+            try:
+                router.unregister(key)
+            except Exception:
+                logger.debug("teardown: failed to unregister %s", key, exc_info=True)
+            # Drop the channel from the adapter's no-auto-thread set
+            # so the entry doesn't accumulate forever after successful
+            # /reset.  Without this, a project's main_channel_id stays
+            # pinned for the entire process lifetime even after the
+            # session is gone.
+            main_channel_id = getattr(session, "main_channel_id", None)
+            if main_channel_id:
+                try:
+                    adapter = self.adapters.get(source.platform)
+                    no_thread_set = getattr(
+                        adapter, "_no_auto_thread_channels", None
+                    )
+                    if isinstance(no_thread_set, set):
+                        no_thread_set.discard(str(main_channel_id))
+                except Exception:
+                    logger.debug(
+                        "teardown: failed to drop %s from no-thread set",
+                        main_channel_id, exc_info=True,
+                    )
+
+    # ------------------------------------------------------------------
+    # P6: Discord orchestration home-channel pre-router
+    # ------------------------------------------------------------------
+
+    def _is_home_channel_event(self, event) -> bool:
+        """Return True iff *event* lands in the configured Discord home channel.
+
+        Returns False when:
+
+        * the event isn't on Discord,
+        * the platform config doesn't define an ``orchestration_home_channel_id``,
+        * the event's chat id doesn't match.
+
+        Both ids are stringified before comparison — Discord ids are
+        64-bit so we keep them as strings everywhere to avoid silent
+        truncation if a config edit drops one through int().
+        """
+        from gateway.config import Platform
+
+        source = getattr(event, "source", None)
+        if source is None:
+            return False
+        if getattr(source, "platform", None) != Platform.DISCORD:
+            return False
+        config = getattr(self, "config", None)
+        platforms = getattr(config, "platforms", None) if config else None
+        if not platforms:
+            return False
+        discord_cfg = platforms.get(Platform.DISCORD) if hasattr(platforms, "get") else None
+        if discord_cfg is None:
+            return False
+        home_id = getattr(discord_cfg, "orchestration_home_channel_id", None)
+        if not home_id:
+            return False
+        return str(getattr(source, "chat_id", "")) == str(home_id)
+
+    async def _handle_home_channel_command(self, event) -> Optional[str]:
+        """Parse ``!new <requirement>`` in the home channel.
+
+        Returns:
+            * a user-facing reply string when ``!new`` matched (success
+              or usage hint or error),
+            * ``None`` when the message wasn't an ``!new`` command, so
+              the caller falls through to the existing handlers (this
+              keeps slash commands like ``/reset`` and ``/update``
+              functional in the home channel).
+        """
+        from gateway.config import Platform
+
+        text = (getattr(event, "text", "") or "").strip()
+        if not text.startswith("!new"):
+            return None
+        # ``!new`` exactly OR ``!new <whitespace>... <args>`` — split on
+        # the first whitespace to get everything after the command.
+        rest = text[len("!new"):]
+        if rest and not rest[0].isspace():
+            # ``!newfoo`` is not the !new command; treat as a regular message.
+            return None
+        requirement = rest.strip()
+        if not requirement:
+            return (
+                "Usage: `!new <requirement>` — describe the work you want "
+                "the system to take on."
+            )
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        if adapter is None:
+            return "⚠️ Discord adapter is not connected."
+
+        config = getattr(self, "config", None)
+        platforms = getattr(config, "platforms", None) if config else None
+        discord_cfg = platforms.get(Platform.DISCORD) if platforms else None
+        guild_id = getattr(discord_cfg, "orchestration_guild_id", None) if discord_cfg else None
+        if not guild_id:
+            return (
+                "⚠️ orchestration_guild_id is not configured. "
+                "Set gateway.discord.orchestration_guild_id in ~/.hermes/config.yaml."
+            )
+
+        # Lazy import — keeps gateway.run importable in environments
+        # that don't have the orchestration stack installed.
+        from gateway.project_bootstrap import bootstrap_new_project
+
+        # Serialize concurrent !new in the same home channel: two
+        # operators typing simultaneously (or a single operator
+        # spamming) would otherwise race to create overlapping
+        # categories/channels and spawn duplicate workers.  The lock is
+        # keyed by home channel id (one home channel = one project
+        # creation queue).  Locks are created lazily and never freed —
+        # there's at most a handful of home channels per process.
+        home_channel_id = str(getattr(event.source, "chat_id", "") or "default")
+        if not hasattr(self, "_bootstrap_locks"):
+            self._bootstrap_locks: dict = {}
+        lock = self._bootstrap_locks.get(home_channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._bootstrap_locks[home_channel_id] = lock
+
+        async with lock:
+            return await bootstrap_new_project(
+                runner=self,
+                requirement=requirement,
+                source=event.source,
+                adapter=adapter,
+                guild_id=str(guild_id),
+            )
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
@@ -1848,6 +2039,18 @@ class GatewayRunner:
         # .update_response so the update process can continue.
         _quick_key = self._session_key_for_source(source)
 
+        # P6: home-channel pre-router.  When the operator types
+        # ``!new <requirement>`` in the configured Discord home channel,
+        # bootstrap a fresh project (category + main channel + orchestrator
+        # session) instead of routing to the per-message agent path.
+        # Non-``!new`` messages in the home channel fall through to the
+        # existing path so other slash commands (/reset, /update, etc.)
+        # still work there.
+        if self._is_home_channel_event(event):
+            home_reply = await self._handle_home_channel_command(event)
+            if home_reply is not None:
+                return home_reply
+
         # P5: long-lived session fast-path.  If the orchestrator (P6+)
         # has registered a LongLivedSession for this channel, hand the
         # event to it and short-circuit; the session owns the
@@ -1865,9 +2068,30 @@ class GatewayRunner:
         _router = getattr(self, "_session_router", None)
         if _router is not None:
             _session = _router.get(_quick_key)
+            # P6: bootstrap registers project sessions under a CHANNEL-scoped
+            # key (no user_id) so all participants in the project channel
+            # share the orchestrator.  When ``group_sessions_per_user=True``
+            # the per-user ``_quick_key`` won't find that registration —
+            # fall back to a channel-only key derived from the same source.
+            _channel_key = _quick_key  # default for the rest of the function
+            if _session is None:
+                try:
+                    _channel_only_source = SessionSource(
+                        platform=source.platform,
+                        chat_id=source.chat_id,
+                        chat_type=getattr(source, "chat_type", "group"),
+                        user_id=None,
+                        user_name=None,
+                    )
+                    _channel_key = self._session_key_for_source(_channel_only_source)
+                    if _channel_key != _quick_key:
+                        _session = _router.get(_channel_key)
+                except Exception:
+                    _session = None
             if _session is not None:
                 _has_update_pending = bool(
                     getattr(self, "_update_prompt_pending", {}).get(_quick_key)
+                    or getattr(self, "_update_prompt_pending", {}).get(_channel_key)
                 )
                 _is_command = bool(event.get_command())
                 if not _is_command and not _has_update_pending:
@@ -1890,6 +2114,12 @@ class GatewayRunner:
                         except (TypeError, ValueError):
                             _is_self = False
                     if _is_self:
+                        return None
+                    # Distinguish closed-session drops from inbox-full
+                    # drops.  A user message that lands during the
+                    # narrow teardown window (e.g. concurrent /reset)
+                    # otherwise gets a misleading "inbox is full" reply.
+                    if getattr(_session, "closed", False):
                         return None
                     return (
                         "⚠️ Message dropped — session inbox is full. "
@@ -3338,7 +3568,13 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Gateway memory flush on reset failed: %s", e)
         self._evict_cached_agent(session_key)
-        
+
+        # Tear down any LongLivedSession registered for this channel (P6).
+        # /reset and /new must drop the per-session worker + history,
+        # otherwise the next non-command message would route to the
+        # stale worker via the SessionRouter fast-path.
+        await self._teardown_long_lived_session_for(source)
+
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()

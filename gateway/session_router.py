@@ -120,6 +120,19 @@ class LongLivedSession:
         self.session_key = session_key
         self.scope_id = scope_id
         self.bot_user_id = bot_user_id
+        # Persona binding (P6): which kind of agent runs this session.
+        # Only "orchestrator" is exercised in P6; "implementer" /
+        # "test_agent" land in P7.  See gateway/personas.py for the
+        # registered string constants.
+        self.persona: Optional[str] = None
+        # Project slug (P6): human-readable id derived from the
+        # requirement, used for stream-channel naming and project paths.
+        self.slug: Optional[str] = None
+        # Discord channel id of the {slug}-main channel this session is
+        # bound to (P6).  Stored separately from session_key so the
+        # worker can post status messages without having to parse the
+        # session_key string.
+        self.main_channel_id: Optional[str] = None
         self._lock = asyncio.Lock()
         self._inbox: asyncio.Queue[InboundMessage] = asyncio.Queue(
             maxsize=inbox_maxsize
@@ -128,6 +141,11 @@ class LongLivedSession:
         # Set by P6+ when the agent loop spawns; P5 leaves it None so
         # tests / introspection can observe "no worker yet".
         self._in_flight: Optional[asyncio.Task] = None
+        # Closed flag (P6): set by teardown so a worker-thread tool call
+        # that's still running after the asyncio task was cancelled can
+        # short-circuit instead of mutating a deleted project.  Read
+        # under ``self._lock`` is unnecessary — single-writer, multi-reader.
+        self.closed: bool = False
 
     # ------------------------------------------------------------------
     # Configuration
@@ -190,17 +208,27 @@ class LongLivedSession:
         """Hand a gateway ``MessageEvent`` to this session.
 
         Returns ``True`` if the event was accepted (queued or admitted
-        as a clarification answer), ``False`` if dropped (bot self-message
-        or inbox full).
+        as a clarification answer), ``False`` if dropped (bot self-message,
+        inbox full, or session closed).
 
         Serialises under ``self._lock`` so the pending-state transition
         and the inbox enqueue happen as one atomic step — without this,
         two concurrent deliveries during an open clarification could
         both observe ``pending == 100`` and both be admitted.
         """
+        # Closed sessions reject silently — a fast-path caller that
+        # captured ``_session`` before /reset must not be able to enqueue
+        # into a torn-down inbox.  Checked outside the lock to avoid
+        # holding it on the hot reject path.
+        if self.closed:
+            return False
         author_id = self._extract_author_id(event)
 
         async with self._lock:
+            # Re-check under the lock so a teardown that happens between
+            # the unlocked check and the enqueue still rejects cleanly.
+            if self.closed:
+                return False
             # 1. Drop self-messages.  We check inside the lock so a late
             #    bot_user_id late-bind from on_ready can't race with a
             #    delivery that started reading None.

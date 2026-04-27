@@ -16,9 +16,120 @@ Import chain (circular-import safe):
 
 import json
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ToolDispatchContext:
+    """Per-call dispatch context for tools that need session-bound state (P6).
+
+    The Discord orchestration phase introduces per-session agent workers
+    (``gateway.session_agent_worker``) that already know the project's
+    ``scope_id`` (Discord category id), ``slug`` (project slug), and
+    eventually ``stream_name``.  Rather than force the agent to thread
+    these through every tool call, the worker injects them here and
+    individual tool handlers can fall back to context fields when the
+    matching ``args`` key is absent.
+
+    Important policy:
+
+    * Auto-binding fills MISSING args only.  If the agent supplies an
+      explicit ``scope_id`` in args, that value wins — context never
+      silently overrides a caller-supplied value.
+    * Per-call only.  ``ToolDispatchContext`` is passed into one
+      ``registry.dispatch()`` call and discarded; nothing on the
+      registry holds it across calls.
+
+    Frozen so handlers can't accidentally mutate it.
+    """
+
+    scope_id: Optional[str] = None
+    slug: Optional[str] = None
+    stream_name: Optional[str] = None
+    # Discord-specific bindings (P6).  ``channel_id`` is the orchestrator's
+    # main channel; ``user_id`` is the human operator who can approve plans
+    # via reaction.  Auto-bind only — caller-supplied values still win.
+    channel_id: Optional[str] = None
+    user_id: Optional[str] = None
+    # Optional callable that returns True when the originating session has
+    # been torn down (P6).  Late tool calls from a worker-thread agent run
+    # whose asyncio task was already cancelled would otherwise mutate a
+    # deleted project; checking this in dispatch lets the registry refuse
+    # the call cleanly with a "session closed" error instead.
+    closed_check: Optional[Callable[[], bool]] = field(default=None, compare=False)
+
+
+# Tool-arg keys that auto-bind from context when the arg is missing or
+# blank.  Tools register their interest by listing one of these keys in
+# their schema; the dispatcher checks before calling the handler.
+_AUTO_BIND_KEYS = ("scope_id", "slug", "stream_name", "channel_id", "user_id")
+
+
+# Toolset allowlist for context auto-bind.  Even if a tool's schema
+# happens to declare ``slug`` / ``user_id`` / etc., we only inject
+# session context for tools that belong to one of these orchestration
+# toolsets.  This prevents a future MCP tool with an unrelated ``slug``
+# parameter from silently receiving the project slug.
+#
+# Add a toolset name here (or call ``register_auto_bind_toolset(...)``)
+# when introducing a new orchestrator-side tool family that should
+# benefit from auto-bind.
+_AUTO_BIND_TOOLSETS: Set[str] = {
+    "workflow-orchestrator-mutating",
+    "workflow-orchestrator-readonly",
+    "discord-orchestration-admin",
+    "discord-orchestration-stream",
+}
+
+
+def register_auto_bind_toolset(toolset: str) -> None:
+    """Add *toolset* to the auto-bind allowlist.
+
+    Tests that register fake tools under custom toolset names must call
+    this (and ideally remove via ``unregister_auto_bind_toolset``) so
+    the dispatch context fills their args.
+    """
+    _AUTO_BIND_TOOLSETS.add(toolset)
+
+
+def unregister_auto_bind_toolset(toolset: str) -> None:
+    """Remove *toolset* from the auto-bind allowlist."""
+    _AUTO_BIND_TOOLSETS.discard(toolset)
+
+
+# Process-wide ambient dispatch context (P6).  The session worker sets
+# this before every ``agent.run_conversation`` turn so that every tool
+# call made during the turn — regardless of how deeply nested it is in
+# AIAgent / handle_function_call / registry.dispatch — picks up the
+# session's scope_id / slug / stream_name without each layer having to
+# thread an explicit ``context=`` kwarg through.
+#
+# Falls back to the explicit ``context=`` kwarg on dispatch() when set
+# (tests / future callers).  Explicit kwarg wins over ambient, ambient
+# wins over None.
+_dispatch_context_var: "ContextVar[Optional[ToolDispatchContext]]" = ContextVar(
+    "hermes_tool_dispatch_context", default=None
+)
+
+
+@contextmanager
+def use_dispatch_context(context: "Optional[ToolDispatchContext]"):
+    """Bind *context* as the ambient dispatch context for the duration.
+
+    Used by ``gateway.session_agent_worker`` to scope a long-lived
+    session's ``scope_id`` / ``slug`` to the tool calls made inside one
+    agent turn.  Safe to nest: the outer context is restored on exit.
+    """
+    token = _dispatch_context_var.set(context)
+    try:
+        yield context
+    finally:
+        _dispatch_context_var.reset(token)
 
 
 class ToolEntry:
@@ -152,10 +263,80 @@ class ToolRegistry:
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * If a ``context`` kwarg of type ``ToolDispatchContext`` is
+          supplied (P6 session-bound dispatch), missing/blank values
+          for ``scope_id`` / ``slug`` / ``stream_name`` in ``args``
+          are filled in from the context.  Caller-supplied args always
+          win — auto-binding only fills holes, it never overrides.
         """
         entry = self._tools.get(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
+        # Auto-bind session context into args (P6).  Done in dispatch
+        # rather than per-handler so every tool benefits without
+        # touching the ~600 lines of registry.register(...) calls.
+        # Pop "context" off kwargs so it never leaks to handlers that
+        # don't accept it — only the dispatcher consumes it.  When no
+        # explicit kwarg is supplied, fall back to the ambient
+        # ``_dispatch_context_var`` set by the session worker.
+        ctx = kwargs.pop("context", None)
+        if ctx is None:
+            ctx = _dispatch_context_var.get()
+        if isinstance(ctx, ToolDispatchContext):
+            # Closed-session short-circuit (P6).  When the session whose
+            # worker thread is running this dispatch was torn down (e.g.
+            # /reset, !new) while the agent was mid-turn, the asyncio
+            # task got cancelled but ``agent.run_conversation`` is still
+            # running on a thread and may issue more tool calls.  Refuse
+            # them so they can't mutate the project we just deleted.
+            closed_check = getattr(ctx, "closed_check", None)
+            if callable(closed_check):
+                # Fail closed: a broken safety gate must not silently
+                # let mutating tool calls through.  If the check raises,
+                # treat the session as closed and refuse the call.
+                try:
+                    is_closed = bool(closed_check())
+                except Exception:
+                    logger.warning(
+                        "Tool %s closed_check raised; failing closed",
+                        name, exc_info=True,
+                    )
+                    is_closed = True
+                if is_closed:
+                    return json.dumps(
+                        {"error": "Session has been closed; tool call refused."}
+                    )
+            # Mutate a shallow copy so we don't surprise the caller's
+            # args dict (some callers reuse it across retries).
+            args = dict(args) if args else {}
+            # Two-layer gate:
+            #   (1) toolset allowlist — only orchestration toolsets opt
+            #       in.  An MCP tool with an unrelated ``slug`` parameter
+            #       cannot leak project metadata because its toolset
+            #       isn't on the allowlist.
+            #   (2) schema declares the key — even an orchestration tool
+            #       only receives keys it advertises in its schema.
+            if entry.toolset in _AUTO_BIND_TOOLSETS:
+                declared = set()
+                try:
+                    params = entry.schema.get("parameters") or {}
+                    props = params.get("properties") or {}
+                    if isinstance(props, dict):
+                        declared = set(props.keys())
+                except Exception:
+                    declared = set()
+                for key in _AUTO_BIND_KEYS:
+                    if key not in declared:
+                        continue
+                    supplied = args.get(key)
+                    # Treat empty string / None as "missing" — the
+                    # orchestrator persona prompt explicitly tells the
+                    # agent to pass "" when it has no value, which lets
+                    # context auto-bind fill it in.
+                    if supplied in (None, ""):
+                        ctx_val = getattr(ctx, key, None)
+                        if ctx_val:
+                            args[key] = ctx_val
         try:
             if entry.is_async:
                 from model_tools import _run_async

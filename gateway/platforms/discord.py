@@ -457,6 +457,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._bot_participated_threads: set = self._load_participated_threads()
+        # Channels where auto-thread is suppressed at runtime (P6).  The
+        # P6 project bootstrap registers ``{slug}-main`` channels here so
+        # auto-thread doesn't fork every operator @mention into a new
+        # Discord thread — the long-lived orchestrator session is keyed
+        # by the parent channel id, not a thread id.
+        self._no_auto_thread_channels: set = set()
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2346,11 +2352,15 @@ class DiscordAdapter(BasePlatformAdapter):
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
+        # Runtime no-thread set (P6) suppresses auto-thread for orchestration
+        # channels registered by ``project_bootstrap.bootstrap_new_project``.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels)
+            skip_thread = bool(channel_ids & no_thread_channels) or bool(
+                channel_ids & self._no_auto_thread_channels
+            )
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             if auto_thread and not skip_thread:
                 thread = await self._auto_create_thread(message)

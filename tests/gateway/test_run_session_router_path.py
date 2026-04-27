@@ -4,6 +4,7 @@ fast-path before falling through to the per-message agent flow (P5).
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -197,3 +198,264 @@ async def test_self_message_drop_is_silent(runner):
     result = await runner._handle_message(event)
     assert result is None  # silent drop, no warning surfaced
     assert session.inbox_qsize() == 0
+
+
+# -----------------------------------------------------------------------------
+# P6: Discord home-channel pre-router for !new <requirement>
+# -----------------------------------------------------------------------------
+
+
+def _configure_home_channel(runner, *, channel_id: str = "777", guild_id: str = "12345"):
+    """Stamp orchestration_home_channel_id / orchestration_guild_id onto
+    the gateway's Discord PlatformConfig so the home-channel pre-router
+    has somewhere to match against."""
+    from gateway.config import PlatformConfig
+
+    runner.config.platforms[Platform.DISCORD] = PlatformConfig(
+        orchestration_home_channel_id=channel_id,
+        orchestration_guild_id=guild_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_command_in_home_channel_invokes_bootstrap(runner, monkeypatch):
+    """``!new <requirement>`` in the configured home channel routes to
+    bootstrap_new_project, NOT the per-message agent path."""
+    _configure_home_channel(runner, channel_id="777")
+    event = _make_event(text="!new build a thing")
+    event.source.chat_id = "777"  # match home channel
+
+    captured = {}
+
+    async def fake_bootstrap(*, runner, requirement, source, adapter, guild_id):
+        captured["requirement"] = requirement
+        captured["guild_id"] = guild_id
+        return "✓ ok"
+
+    monkeypatch.setattr(
+        "gateway.project_bootstrap.bootstrap_new_project", fake_bootstrap
+    )
+
+    explode = AsyncMock(side_effect=AssertionError("per-message path ran"))
+    runner._handle_message_with_agent = explode  # type: ignore[attr-defined]
+
+    result = await runner._handle_message(event)
+    assert result == "✓ ok"
+    assert captured["requirement"] == "build a thing"
+    assert captured["guild_id"] == "12345"
+    explode.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_new_message_in_home_channel_falls_through(runner, monkeypatch):
+    """Plain text in the home channel (no ``!new`` prefix) falls through
+    to the existing per-message agent path."""
+    _configure_home_channel(runner, channel_id="777")
+    event = _make_event(text="just chatting")
+    event.source.chat_id = "777"
+
+    sentinel = AsyncMock(return_value="ok")
+    runner._handle_message_with_agent = sentinel  # type: ignore[attr-defined]
+
+    bootstrap_called = AsyncMock()
+    monkeypatch.setattr(
+        "gateway.project_bootstrap.bootstrap_new_project", bootstrap_called
+    )
+
+    try:
+        await runner._handle_message(event)
+    except Exception:
+        pass
+
+    bootstrap_called.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_new_command_outside_home_channel_falls_through(runner, monkeypatch):
+    """``!new`` in a non-home channel is treated as a regular message —
+    no bootstrap, falls through to the per-message agent path."""
+    _configure_home_channel(runner, channel_id="777")
+    event = _make_event(text="!new ignored")
+    event.source.chat_id = "different-channel"
+
+    bootstrap_called = AsyncMock()
+    monkeypatch.setattr(
+        "gateway.project_bootstrap.bootstrap_new_project", bootstrap_called
+    )
+
+    sentinel = AsyncMock(return_value="ok")
+    runner._handle_message_with_agent = sentinel  # type: ignore[attr-defined]
+
+    try:
+        await runner._handle_message(event)
+    except Exception:
+        pass
+
+    bootstrap_called.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_new_with_empty_requirement_returns_usage_hint(runner):
+    """``!new`` with no requirement string returns a usage hint and
+    does NOT invoke bootstrap."""
+    _configure_home_channel(runner, channel_id="777")
+    event = _make_event(text="!new   ")
+    event.source.chat_id = "777"
+
+    result = await runner._handle_message(event)
+    assert isinstance(result, str)
+    assert result.startswith("Usage: `!new")
+
+
+@pytest.mark.asyncio
+async def test_slash_command_in_home_channel_falls_through(runner, monkeypatch):
+    """A slash command (``/status``, ``/reset``, ``/update``) in the
+    home channel must NOT be intercepted by the home-channel pre-router.
+    Only ``!new`` is the home-channel verb; everything else falls through
+    to the normal handlers.  Regression for Codex P6 suggestion #1.
+    """
+    _configure_home_channel(runner, channel_id="777")
+    event = _make_event(text="/status")
+    event.source.chat_id = "777"
+
+    bootstrap_called = AsyncMock()
+    monkeypatch.setattr(
+        "gateway.project_bootstrap.bootstrap_new_project", bootstrap_called
+    )
+
+    try:
+        await runner._handle_message(event)
+    except Exception:
+        # /status handling can fail in this minimal fixture; we only
+        # care that bootstrap wasn't invoked.
+        pass
+
+    bootstrap_called.assert_not_called()
+
+
+
+# -----------------------------------------------------------------------------
+# P6: /reset must tear down LongLivedSession + worker
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_teardown_unregisters_session_and_cancels_worker(runner):
+    """``_teardown_long_lived_session_for`` must drop the session out of
+    the router AND cancel the in-flight worker.  Regression for Codex
+    Critical #2: /reset/new previously left the orchestrator worker
+    running and its history live, so the next non-command message would
+    route to a stale agent.
+    """
+    event = _make_event()
+    session_key = runner._session_key_for_source(event.source)
+
+    session = LongLivedSession(session_key)
+
+    # Plant a long-running fake worker so we can assert it was cancelled.
+    cancelled = asyncio.Event()
+
+    async def _fake_worker():
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    session._in_flight = asyncio.create_task(_fake_worker())
+    runner._session_router.register(session_key, session)
+    assert len(runner._session_router) == 1
+
+    # Let the worker actually start so the cancel hits inside the try.
+    # Without this yield, cancel() lands before the task ever runs and
+    # the except clause never fires (the task just finishes cancelled).
+    await asyncio.sleep(0)
+
+    await runner._teardown_long_lived_session_for(event.source)
+
+    assert len(runner._session_router) == 0
+    assert session.closed is True
+    assert cancelled.is_set(), "in-flight worker was not cancelled"
+
+
+@pytest.mark.asyncio
+async def test_teardown_also_finds_channel_scoped_key(runner):
+    """Bootstrap registers under a channel-scoped key (no user_id).
+    A user-issued /reset arrives with a per-user source — teardown must
+    probe BOTH the per-user key AND the channel-scoped key, otherwise
+    the bootstrap-registered session would be missed.
+    """
+    event = _make_event()  # user_id="user-42"
+    # Fabricate the channel-scoped key the way bootstrap does.
+    channel_only = SessionSource(
+        platform=event.source.platform,
+        chat_id=event.source.chat_id,
+        chat_type="group",
+        user_id=None,
+        user_name=None,
+    )
+    channel_key = runner._session_key_for_source(channel_only)
+
+    session = LongLivedSession(channel_key)
+    runner._session_router.register(channel_key, session)
+    assert len(runner._session_router) == 1
+
+    # Teardown is called with the per-user source from /reset.
+    await runner._teardown_long_lived_session_for(event.source)
+
+    assert len(runner._session_router) == 0
+
+
+@pytest.mark.asyncio
+async def test_teardown_is_noop_when_no_session_registered(runner):
+    """No registration → teardown returns cleanly without raising."""
+    event = _make_event()
+    # Should not raise.
+    await runner._teardown_long_lived_session_for(event.source)
+    assert len(runner._session_router) == 0
+
+
+@pytest.mark.asyncio
+async def test_fast_path_finds_channel_scoped_session_for_per_user_event(runner):
+    """Bootstrap registers under a CHANNEL-scoped key (no user_id), but
+    inbound user events arrive with user_id populated, so the per-user
+    ``_quick_key`` won't find that registration directly.  The fast path
+    must fall back to the channel-only key derived from the same source.
+
+    Regression for Codex follow-up High #1: without this fallback, every
+    user message in the project channel falls through to the per-message
+    agent path and the orchestrator worker never sees its inbox.
+    """
+    event = _make_event(user_id="operator-99")
+    channel_only = SessionSource(
+        platform=event.source.platform,
+        chat_id=event.source.chat_id,
+        chat_type="group",
+        user_id=None,
+        user_name=None,
+    )
+    channel_key = runner._session_key_for_source(channel_only)
+    per_user_key = runner._session_key_for_source(event.source)
+    # Sanity: the two keys must actually differ for this regression to
+    # be meaningful — if config doesn't isolate per-user, the test is
+    # a no-op rather than a false positive.
+    assert channel_key != per_user_key, (
+        "test fixture's gateway config doesn't isolate per-user; "
+        "this regression test cannot exercise the channel fallback"
+    )
+
+    session = LongLivedSession(channel_key)
+    runner._session_router.register(channel_key, session)
+
+    # Per-message path must NOT run when the channel-scoped session
+    # absorbs the message.
+    explode = AsyncMock(side_effect=AssertionError("per-message path ran"))
+    runner._handle_message_with_agent = explode  # type: ignore[attr-defined]
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    explode.assert_not_called()
+    assert session.inbox_qsize() == 1
+
+
