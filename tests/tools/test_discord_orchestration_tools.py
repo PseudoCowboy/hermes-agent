@@ -436,23 +436,49 @@ class TestProductionRegistration:
     """Importing ``model_tools`` (the production discovery entry point)
     must register every Discord orchestration tool.  Previously the
     module was missing from ``_discover_tools()`` so the tools only
-    appeared because this test file force-imported them at the top."""
+    appeared because this test file force-imported them at the top.
+
+    Because this very test file force-imports
+    ``tools.discord_orchestration_tools`` at module scope, the in-process
+    registry is already populated by the time the test runs — so we
+    spawn a *fresh* Python process to verify the production discovery
+    path actually wires the tools in.  Otherwise the test would pass
+    even if someone removed the entry from ``_discover_tools()``.
+    """
 
     def test_model_tools_registers_discord_tools(self):
-        import model_tools  # noqa: F401
-        from tools.registry import registry
+        import subprocess
+        import sys
 
-        for name in (
-            "discord_create_project_category",
-            "discord_create_stream_channel",
-            "discord_archive_project_category",
-            "discord_post_message",
-            "discord_react_to_message",
-            "discord_wait_for_reaction",
-        ):
-            assert registry.get_toolset_for_tool(name) is not None, (
-                f"{name} should be registered after import model_tools"
-            )
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import model_tools;"
+                    "from tools.registry import registry;"
+                    "names = ["
+                    "'discord_create_project_category',"
+                    "'discord_create_stream_channel',"
+                    "'discord_archive_project_category',"
+                    "'discord_post_message',"
+                    "'discord_react_to_message',"
+                    "'discord_wait_for_reaction']\n"
+                    "missing = [n for n in names "
+                    "if registry.get_toolset_for_tool(n) is None]\n"
+                    "assert not missing, ('missing: ' + repr(missing))\n"
+                    "print('OK')"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, (
+            f"subprocess registration check failed:\n"
+            f"stdout={proc.stdout}\nstderr={proc.stderr}"
+        )
+        assert "OK" in proc.stdout
 
 
 # =============================================================================
@@ -621,3 +647,31 @@ class TestCrossThreadLoopAffinity:
             t.join(timeout=2.0)
         assert out.get("timed_out") is False, out
         assert out["emoji"] == "\u2705"
+
+    def test_wait_for_reaction_inner_timeout_returns_timed_out(
+        self, cross_thread_adapter
+    ):
+        """Regression: previously the live-loop ``_run_sync`` path
+        wrapped *any* TimeoutError as a generic outer-wait error,
+        eating the inner ``ReactionWaiter.wait(timeout=...)`` expiry
+        the handler relies on to return ``{"timed_out": true}``.
+
+        With the fix, an inner timeout propagates as
+        ``asyncio.TimeoutError`` and the handler returns the timed-out
+        envelope unchanged.  We also pin that the outer ``_run_sync``
+        timeout no longer hard-caps the user-supplied timeout — a
+        ``timeout_s=0.05`` request must complete in well under a
+        second, never the old 30s outer ceiling.
+        """
+        import time as _t
+
+        start = _t.monotonic()
+        out = _dispatch(
+            "discord_wait_for_reaction",
+            {"channel_id": "10", "message_id": "20", "user_id": "30",
+             "timeout_s": 0.05},
+        )
+        elapsed = _t.monotonic() - start
+        assert out == {"timed_out": True}, out
+        # Sanity: inner timeout is honored, not clamped to outer 30s.
+        assert elapsed < 5.0, f"wait_for_reaction took {elapsed:.2f}s — outer wait clobbered the inner timeout"

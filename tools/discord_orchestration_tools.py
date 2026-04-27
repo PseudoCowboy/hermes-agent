@@ -29,7 +29,6 @@ just the first half of §4's enforcement story.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
 import logging
 from typing import Any, Optional
@@ -141,6 +140,21 @@ def _run_sync(coro: Any, *, timeout: float = 30.0) -> Any:
     client's loop with :func:`asyncio.run_coroutine_threadsafe` and
     block on the result.
 
+    *timeout* is the **outer** wait — how long this thread is willing to
+    block before giving up on the future.  Callers whose coroutine has
+    its own internal timeout (e.g. ``ReactionWaiter.wait(timeout=...)``)
+    must pass an outer timeout strictly larger than the inner one, or
+    the outer wait will fire first and rewrap a perfectly-good inner
+    expiry as a generic "discord operation timed out" error.
+
+    The disambiguation between *outer* and *inner* timeout matters
+    because in Python 3.11+ ``asyncio.TimeoutError`` and
+    ``concurrent.futures.TimeoutError`` are the same class.  We tell
+    them apart by checking ``future.done()``: only an outer-wait expiry
+    leaves the future un-finished.  Inner ``TimeoutError`` propagates
+    untouched so handlers can map it to their own contract (e.g.
+    ``discord_wait_for_reaction`` returning ``{"timed_out": True}``).
+
     For the special case where there is no live adapter loop yet
     (``ReactionWaiter`` tests use a fake adapter without a real client),
     fall back to a fresh ``asyncio.run()`` so the unit tests still work.
@@ -165,11 +179,18 @@ def _run_sync(coro: Any, *, timeout: float = 30.0) -> Any:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         try:
             return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError as exc:
-            future.cancel()
-            raise OrchestrationError(
-                f"discord operation timed out after {timeout}s"
-            ) from exc
+        except TimeoutError as exc:
+            if not future.done():
+                # Outer wait expired while the coroutine was still
+                # running — that's the only case we want to wrap.
+                future.cancel()
+                raise OrchestrationError(
+                    f"discord operation timed out after {timeout}s"
+                ) from exc
+            # Inner coroutine raised TimeoutError (e.g. asyncio.wait_for
+            # inside ``ReactionWaiter.wait``).  Re-raise so handlers can
+            # translate it into their own contract.
+            raise
 
     # Fallback path used by unit tests with fake adapters whose fake
     # client has no live loop.  Safe because the fakes don't share state
@@ -480,7 +501,15 @@ def _handle_wait_for_reaction(args: dict, **_kw: Any) -> str:
             )
 
         try:
-            emoji = _run_sync(_go())
+            # The inner ``waiter.wait(timeout=timeout)`` does the
+            # semantic timeout; the outer ``_run_sync`` timeout is just
+            # the worker-thread blocking ceiling, so it must be strictly
+            # larger than ``timeout`` or the outer wait would fire first
+            # and rewrap the inner expiry as a generic error.  Add a
+            # 5s margin (and a 30s minimum so trivially-small inner
+            # timeouts in tests still leave headroom).
+            outer = max(timeout + 5.0, 30.0)
+            emoji = _run_sync(_go(), timeout=outer)
         except asyncio.TimeoutError:
             return _ok({"timed_out": True})
         return _ok({"emoji": emoji, "timed_out": False})
