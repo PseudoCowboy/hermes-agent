@@ -431,6 +431,13 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        # Orchestration reaction waiter — see plans/discord-orchestration-spec
+        # §3.  Lives on the adapter so the orchestrator can call
+        # ``adapter._reaction_waiter.wait(...)`` when it posts a
+        # clarification, and the on_raw_reaction_add handler routes
+        # incoming reactions to it.
+        from gateway.platforms.discord_orchestration import ReactionWaiter
+        self._reaction_waiter = ReactionWaiter()
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -643,6 +650,23 @@ class DiscordAdapter(BasePlatformAdapter):
                         else f"moved {before.channel.name} -> {after.channel.name}",
                         guild_id,
                     )
+
+            # Orchestration reaction routing.  The reaction waiter is
+            # framework-agnostic; this handler bridges the discord.py
+            # ``on_raw_reaction_add`` event to it.  Bot self-reactions are
+            # filtered by the handler when ``bot_user_id`` is set; we
+            # capture the bot id from on_ready since it's unknown at
+            # register time, but the waiter is also key-scoped to a
+            # specific user so a stray bot reaction can't accidentally
+            # satisfy a wait.
+            from gateway.platforms.discord_orchestration import (
+                install_reaction_handler,
+            )
+            install_reaction_handler(
+                self._client,
+                adapter_self._reaction_waiter,
+                bot_user_id=None,
+            )
 
             # Register slash commands
             self._register_slash_commands()
