@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Word Translator</h1>
+      <p class="sub">Offline EN → ZH dictionary</p>
+    </header>
+
+    <section class="add">
+      <input id="en" type="text" placeholder="English (letters only)" maxlength="48" />
+      <input id="zh" type="text" placeholder="中文 (leave blank to mark no-translation)" maxlength="80" />
+      <label class="suppress">
+        <input id="suppress" type="checkbox" /> no translation
+      </label>
+      <button id="addBtn">Save</button>
+      <div id="msg" class="msg" role="status"></div>
+    </section>
+
+    <section class="list">
+      <input id="filter" type="text" placeholder="Filter…" />
+      <ul id="items"></ul>
+    </section>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

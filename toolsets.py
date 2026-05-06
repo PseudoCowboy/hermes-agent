@@ -88,6 +88,7 @@ _HERMES_WORKFLOW_ORCHESTRATOR_MUTATING_TOOLS = [
 _HERMES_WORKFLOW_STREAM_MUTATING_TOOLS = [
     "workflow_checkpoint",
     "workflow_review_task",
+    "workflow_stream_signal",
 ]
 
 # Back-compat union — referenced by older toolset definitions
@@ -253,7 +254,7 @@ TOOLSETS = {
     },
 
     "workflow-stream-mutating": {
-        "description": "Stream-only workflow mutators: per-stream progress + verdict writes (checkpoint, review_task)",
+        "description": "Stream-only workflow mutators: per-stream progress + verdict + cross-stream signals (checkpoint, review_task, stream_signal)",
         "tools": list(_HERMES_WORKFLOW_STREAM_MUTATING_TOOLS),
         "includes": []
     },

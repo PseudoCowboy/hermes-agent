@@ -434,6 +434,16 @@ async def session_agent_worker(
     # one operator per project channel (P6 invariant).
     approver_user_id: Optional[str] = None
 
+    # Capture the gateway loop once at startup so dispatch context can
+    # carry it to tool handlers (cross-stream-visibility phase).
+    # Orchestrator turns don't auto-emit (no stream_name) but workflow
+    # tools may still need ``ctx.loop`` / ``ctx.adapter`` for their own
+    # cross-stream coordination.
+    try:
+        _gateway_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _gateway_loop = None
+
     def _build_dispatch_ctx() -> ToolDispatchContext:
         # Re-built each turn so a newly observed approver_user_id picks
         # up; the rest of the fields are stable for the session lifetime.
@@ -448,6 +458,9 @@ async def session_agent_worker(
             # sets ``session.closed = True`` while the to-thread agent
             # may still be issuing tool calls; this gates them.
             closed_check=lambda: bool(getattr(session, "closed", False)),
+            loop=_gateway_loop,
+            adapter=adapter,
+            runner=runner,
         )
 
     while True:

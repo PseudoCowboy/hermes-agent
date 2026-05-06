@@ -298,6 +298,27 @@ def write_project_runstate(
 # -----------------------------------------------------------------------------
 
 
+def _read_project_runstate_snapshot(
+    scope_id: Optional[str], slug: str
+) -> Optional[Dict[str, Any]]:
+    """Best-effort, non-raising read of the project runstate file.
+
+    Used by the cross-stream-visibility helpers when in-memory
+    rollup state (``rollup_message_id`` / ``main_channel_id`` /
+    ``stream_status``) is missing.  Distinct from the public
+    :func:`read_project_runstate` stub which deliberately raises
+    until P7b lands.
+
+    Returns the parsed dict, or ``None`` if the file is absent or
+    unreadable.  Never raises.
+    """
+    try:
+        path = _runstate_path_project(scope_id, slug)
+        return _read_existing(path)
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
 def read_project_runstate(scope_id: Optional[str], slug: str) -> Dict[str, Any]:
     """Read project runstate.  P7b — not implemented in P7a-1."""
     raise NotImplementedError("read_project_runstate lands in P7b")

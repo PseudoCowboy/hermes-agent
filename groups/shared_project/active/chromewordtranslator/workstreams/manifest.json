@@ -1,0 +1,42 @@
+{
+  "extension-core": {
+    "owner": "impl-core",
+    "reviewer": "reviewer-a",
+    "completionMode": "code",
+    "dependencies": [],
+    "acceptanceCriteria": [
+      "manifest.json is valid MV3 with action, content_scripts, background service_worker, storage permission",
+      "Double-click on an English word triggers a tooltip with the Chinese translation or a \"no translation\" marker",
+      "Seed dictionary (~20 words) is loaded into chrome.storage.local on install",
+      "background service worker responds to GET_TRANSLATION and suppresses the tooltip when suppress=true"
+    ]
+  },
+  "popup-ui": {
+    "owner": "impl-popup",
+    "reviewer": "reviewer-a",
+    "completionMode": "code",
+    "dependencies": [
+      "extension-core"
+    ],
+    "acceptanceCriteria": [
+      "popup.html renders the full dictionary list sorted alphabetically",
+      "User can add a new EN->ZH pair; invalid input is rejected with a visible message",
+      "User can edit an existing translation and the change persists across reloads",
+      "User can delete an entry or mark it as \"no translation\" (suppress=true)"
+    ]
+  },
+  "packaging": {
+    "owner": "impl-pkg",
+    "reviewer": "reviewer-a",
+    "completionMode": "code",
+    "dependencies": [
+      "extension-core",
+      "popup-ui"
+    ],
+    "acceptanceCriteria": [
+      "README.md explains the no-network design and Load Unpacked install flow",
+      "Extension loads in Chrome via chrome://extensions Load Unpacked without errors",
+      "Icons present at 16/48/128 px referenced by manifest.json"
+    ]
+  }
+}

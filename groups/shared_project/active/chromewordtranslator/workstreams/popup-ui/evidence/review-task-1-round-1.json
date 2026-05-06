@@ -1,0 +1,19 @@
+{
+  "taskId": 1,
+  "taskTitle": "P1: popup.html skeleton with list section and add-entry form",
+  "streamType": "popup-ui",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "popup.html has add form + filter + list",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: popup renders"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}

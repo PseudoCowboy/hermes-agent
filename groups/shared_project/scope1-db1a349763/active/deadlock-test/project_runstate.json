@@ -1,0 +1,16 @@
+{
+  "main_channel_id": "888",
+  "rollup_message_id": "999",
+  "scope_id": "scope1",
+  "slug": "deadlock-test",
+  "stream_status": {
+    "alpha": {
+      "channel_id": "111",
+      "last_event": "to complete",
+      "role": "backend",
+      "status": "complete",
+      "updated_at": "2026-04-29T08:25:35Z"
+    }
+  },
+  "updated_at": "2026-04-29T08:25:35Z"
+}

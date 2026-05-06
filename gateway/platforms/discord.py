@@ -942,6 +942,28 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def pin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> SendResult:
+        """Pin a Discord message; best-effort, swallow Discord-specific errors."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            msg = await channel.fetch_message(int(message_id))
+            await msg.pin(reason="hermes rollup")
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning(
+                "[%s] Failed to pin Discord message %s on %s: %s",
+                self.name, message_id, chat_id, e,
+            )
+            return SendResult(success=False, error=str(e))
+
     async def _send_file_attachment(
         self,
         chat_id: str,

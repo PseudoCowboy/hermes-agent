@@ -1,0 +1,81 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "P1: popup.html skeleton with list section and add-entry form",
+      "status": "approved",
+      "owner": "impl-popup",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: popup renders",
+        "workstreams/popup-ui/evidence/review-task-1-round-1.json"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "P2: popup.css for compact, readable dictionary list",
+      "status": "approved",
+      "owner": "impl-popup",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: style",
+        "workstreams/popup-ui/evidence/review-task-2-round-1.json"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "P3: popup.js — load dictionary from storage, render sorted list",
+      "status": "approved",
+      "owner": "impl-popup",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: sorted list",
+        "workstreams/popup-ui/evidence/review-task-3-round-1.json"
+      ]
+    },
+    {
+      "id": 4,
+      "title": "P4: popup.js — handle add/edit/delete and suppress toggle; persist to storage.local",
+      "status": "approved",
+      "owner": "impl-popup",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: edits persist",
+        "workstreams/popup-ui/evidence/review-task-4-round-1.json"
+      ]
+    },
+    {
+      "id": 5,
+      "title": "P5: popup.js — inline validation (non-empty English word, ASCII-only, optional Chinese)",
+      "status": "approved",
+      "owner": "impl-popup",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: validation",
+        "workstreams/popup-ui/evidence/review-task-5-round-1.json"
+      ]
+    }
+  ],
+  "currentTask": 1,
+  "lastReviewedBy": "reviewer-a"
+}

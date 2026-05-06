@@ -1,0 +1,22 @@
+# Progress — popup-ui
+
+- [2026-04-23T07:22:37Z] (owner) [task 1 -> in_progress] task 1 in progress
+- [2026-04-23T07:22:37Z] (owner) [task 1 -> implemented] task 1 implemented
+- [2026-04-23T07:22:37Z] (owner) [task 2 -> in_progress] task 2 in progress
+- [2026-04-23T07:22:37Z] (owner) [task 2 -> implemented] task 2 implemented
+- [2026-04-23T07:22:37Z] (owner) [task 3 -> in_progress] task 3 in progress
+- [2026-04-23T07:22:37Z] (owner) [task 3 -> implemented] task 3 implemented
+- [2026-04-23T07:22:37Z] (owner) [task 4 -> in_progress] task 4 in progress
+- [2026-04-23T07:22:37Z] (owner) [task 4 -> implemented] task 4 implemented
+- [2026-04-23T07:22:37Z] (owner) [task 5 -> in_progress] task 5 in progress
+- [2026-04-23T07:22:37Z] (owner) [task 5 -> implemented] task 5 implemented
+- [2026-04-23T07:22:52Z] (owner) [task 1 -> in_review] task 1 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 1 -> approved] popup.html has add form + filter + list
+- [2026-04-23T07:22:52Z] (owner) [task 2 -> in_review] task 2 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 2 -> approved] popup.css compact and readable
+- [2026-04-23T07:22:52Z] (owner) [task 3 -> in_review] task 3 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 3 -> approved] popup.js render() sorts keys alphabetically
+- [2026-04-23T07:22:52Z] (owner) [task 4 -> in_review] task 4 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 4 -> approved] add/edit/delete/suppress all write through chrome.storage.local
+- [2026-04-23T07:22:52Z] (owner) [task 5 -> in_review] task 5 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 5 -> approved] input validated against WORD_RE; empty zh rejected unless suppress=true

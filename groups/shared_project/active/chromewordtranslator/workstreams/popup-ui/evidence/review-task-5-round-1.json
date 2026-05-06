@@ -1,0 +1,19 @@
+{
+  "taskId": 5,
+  "taskTitle": "P5: popup.js — inline validation (non-empty English word, ASCII-only, optional Chinese)",
+  "streamType": "popup-ui",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "input validated against WORD_RE; empty zh rejected unless suppress=true",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: validation"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}

@@ -1,0 +1,1 @@
+manifest.json, content.js, content.css, background.js, seed-dictionary.js

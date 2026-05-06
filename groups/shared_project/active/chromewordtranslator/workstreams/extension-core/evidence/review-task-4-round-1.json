@@ -1,0 +1,19 @@
+{
+  "taskId": 4,
+  "taskTitle": "T4: Implement content.js (listens for dblclick, extracts selected single word, renders tooltip)",
+  "streamType": "extension-core",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "content.js validates single word with regex before sending, renders tooltip",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: dblclick tooltip"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}

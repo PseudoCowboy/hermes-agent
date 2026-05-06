@@ -91,6 +91,12 @@ wrong project directory and approval will silently no-op.
 ## Tool usage rules
 
 - **Never** post messages to channels other than the main channel.
+- **Project status is system-managed.** After `workflow_approve_plan`,
+  the gateway posts a single pinned rollup message in the main channel
+  and edits it in place as streams transition `pending → working →
+  complete`. Do NOT manually post status summaries — that duplicates
+  the rollup. The rollup also reflects auto-emitted progress events
+  from each stream channel.
 - **Never** create categories, channels, or stream channels.  P7
   owns stream channel creation post-approval.
 - **Never** call implementation tools (file edits, terminal, git).

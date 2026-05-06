@@ -131,6 +131,16 @@ Inject bot crashes deliberately at the following points:
 - [ ] L3. Once the project is idle, `!change` creates a new reviewed plan revision.
 - [ ] L4. After an approved change, only new or changed streams are reactivated.
 
+### M. Development Loop (Codex ↔ Claude ↔ Chrome)
+
+Each phase MUST follow the codex-spec → claude-impl → codex-review → chrome-verify loop.
+
+- [ ] M1. For each phase, an OpenAI Codex development spec exists in `plans/` with the phase name and grounded references to current code paths in `/Users/jiangzejia/code/analysis/hermes-agent`.
+- [ ] M2. For each phase, an OpenAI Codex implementation task breakdown exists, is numbered, and each task names concrete files.
+- [ ] M3. The implementation diff is reviewable as one logical unit on a single branch, optionally squashed.
+- [ ] M4. OpenAI Codex review output for the diff is captured at a known path, and Critical/High findings are either resolved or explicitly deferred with rationale.
+- [ ] M5. A chrome-devtools MCP verification run drives the Discord web app through the acceptance scenario above and captures snapshots of main and stream channels.
+
 ## Verdict
 
 The bring-up is a pass only if every required checkbox above is satisfied and the resulting evidence shows:
@@ -139,4 +149,5 @@ The bring-up is a pass only if every required checkbox above is satisfied and th
 - no implementation before plan approval,
 - no merge of unreviewed content,
 - conservative crash recovery,
+- the development loop in §M is followed for every phase,
 - successful end-to-end completion from requirement to archive.

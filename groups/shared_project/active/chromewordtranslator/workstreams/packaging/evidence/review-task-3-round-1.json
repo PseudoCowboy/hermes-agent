@@ -1,0 +1,19 @@
+{
+  "taskId": 3,
+  "taskTitle": "K3: Smoke-test Load Unpacked flow and record result in progress.md",
+  "streamType": "packaging",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "Manual Load Unpacked smoke noted in packaging progress.md",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: loads without errors"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}

@@ -1,0 +1,26 @@
+// Seed dictionary — ~20 common English-to-Chinese word pairs.
+// Exported as an ES module so background.js (type: "module") can import it.
+export const SEED_DICTIONARY = {
+  hello: "你好",
+  world: "世界",
+  good: "好的",
+  morning: "早上",
+  night: "夜晚",
+  water: "水",
+  fire: "火",
+  book: "书",
+  apple: "苹果",
+  friend: "朋友",
+  family: "家庭",
+  love: "爱",
+  time: "时间",
+  money: "钱",
+  work: "工作",
+  school: "学校",
+  teacher: "老师",
+  student: "学生",
+  computer: "电脑",
+  language: "语言",
+  cat: "猫",
+  dog: "狗",
+};

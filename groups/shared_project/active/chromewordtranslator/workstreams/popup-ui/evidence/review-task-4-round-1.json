@@ -1,0 +1,19 @@
+{
+  "taskId": 4,
+  "taskTitle": "P4: popup.js — handle add/edit/delete and suppress toggle; persist to storage.local",
+  "streamType": "popup-ui",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "add/edit/delete/suppress all write through chrome.storage.local",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: edits persist"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}

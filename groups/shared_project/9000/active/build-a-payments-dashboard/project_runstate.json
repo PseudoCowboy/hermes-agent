@@ -1,0 +1,12 @@
+{
+  "active_merge_stream": null,
+  "approved_head_sha": null,
+  "integration_test_started_ts": null,
+  "main_channel_id": "9001",
+  "merged_streams": [],
+  "phase": "draft",
+  "reason": null,
+  "scope_id": "9000",
+  "slug": "build-a-payments-dashboard",
+  "updated_at": "2026-04-29T08:23:37Z"
+}

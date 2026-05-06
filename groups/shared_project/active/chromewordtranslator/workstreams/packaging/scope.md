@@ -1,0 +1,1 @@
+README.md, icons/, build.sh (optional zip)

@@ -648,6 +648,18 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def pin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> SendResult:
+        """Pin a message to the top of the channel.
+
+        Optional. Platforms that don't support pinning return
+        ``success=False`` and callers treat it as best-effort.
+        """
+        return SendResult(success=False, error="Not supported")
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.

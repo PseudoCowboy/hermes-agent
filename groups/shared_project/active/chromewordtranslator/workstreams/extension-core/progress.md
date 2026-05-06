@@ -1,0 +1,22 @@
+# Progress — extension-core
+
+- [2026-04-23T07:19:31Z] (impl-core) [task 1 -> in_progress] T1 implemented
+- [2026-04-23T07:19:31Z] (impl-core) [task 1 -> implemented] T1 code written
+- [2026-04-23T07:19:31Z] (impl-core) [task 2 -> in_progress] T2 implemented
+- [2026-04-23T07:19:31Z] (impl-core) [task 2 -> implemented] T2 code written
+- [2026-04-23T07:19:31Z] (impl-core) [task 3 -> in_progress] T3 implemented
+- [2026-04-23T07:19:31Z] (impl-core) [task 3 -> implemented] T3 code written
+- [2026-04-23T07:19:31Z] (impl-core) [task 4 -> in_progress] T4 implemented
+- [2026-04-23T07:19:31Z] (impl-core) [task 4 -> implemented] T4 code written
+- [2026-04-23T07:19:31Z] (impl-core) [task 5 -> in_progress] T5 implemented
+- [2026-04-23T07:19:31Z] (impl-core) [task 5 -> implemented] T5 code written
+- [2026-04-23T07:22:52Z] (owner) [task 1 -> in_review] task 1 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 1 -> approved] manifest.json present and valid MV3 with required sections
+- [2026-04-23T07:22:52Z] (owner) [task 2 -> in_review] task 2 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 2 -> approved] Seed dictionary exports 22 pairs including cat/dog
+- [2026-04-23T07:22:52Z] (owner) [task 3 -> in_review] task 3 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 3 -> approved] background.js uses onInstalled + chrome.runtime.onMessage with async response
+- [2026-04-23T07:22:52Z] (owner) [task 4 -> in_review] task 4 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 4 -> approved] content.js validates single word with regex before sending, renders tooltip
+- [2026-04-23T07:22:52Z] (owner) [task 5 -> in_review] task 5 submitted for review
+- [2026-04-23T07:22:52Z] (reviewer-a) [task 5 -> approved] content.css gives high z-index and readable style

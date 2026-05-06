@@ -526,15 +526,121 @@ async def _bootstrap_under_lock(
             scope_id, slug, exc_info=True,
         )
 
-    # Step 8: post a single summary message to the main channel.
+    # Step 8: post the initial pinned rollup message to the main channel.
+    # Cross-stream-visibility phase: replaces the static summary post with a
+    # rollup body that gets edited in place as streams transition
+    # ``pending → working → complete``. We capture ``message_id`` from
+    # ``adapter.send`` so future ``edit_message`` calls can target it, then
+    # persist ``rollup_message_id`` + initial ``stream_status`` to the
+    # project runstate (best-effort), best-effort pin the message, and
+    # stash the same state on the live ``LongLivedSession`` objects so the
+    # auto-emit hook can find it without a disk read.
     streams = [b[0] for b in bootstrapped]
-    summary = _format_summary_message(streams)
+    from datetime import datetime, timezone
+
+    initial_status: Dict[str, Dict[str, Any]] = {
+        s.stream_name: {
+            "status": "pending",
+            "role": s.role,
+            "channel_id": s.channel_id,
+            "last_event": None,
+            "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        for s in streams
+    }
+
+    # Render via the new rollup formatter; fall back to the old summary
+    # body if the helper is unavailable for any reason (defensive — the
+    # module ships in this same phase, but a partial deploy shouldn't
+    # leave the main channel silent).
     try:
-        await adapter.send(main_channel_id, summary)
+        from gateway.project_status import format_rollup_message
+        summary = format_rollup_message(slug, initial_status)
+    except Exception:
+        logger.exception("rollup formatter unavailable; using summary fallback")
+        summary = _format_summary_message(streams)
+
+    rollup_message_id: Optional[str] = None
+    try:
+        send_result = await adapter.send(main_channel_id, summary)
+        # Adapters return either a SendResult dataclass or a dict-ish
+        # object with ``message_id``. Handle both shapes defensively.
+        rollup_message_id = (
+            getattr(send_result, "message_id", None)
+            if send_result is not None else None
+        )
+        if rollup_message_id is None and isinstance(send_result, dict):
+            rollup_message_id = send_result.get("message_id")
     except Exception:
         logger.exception(
-            "failed to post stream-bootstrap summary to main channel %s",
+            "failed to post stream-bootstrap rollup to main channel %s",
             main_channel_id,
+        )
+
+    # Best-effort pin so the rollup stays at the top of the channel.
+    if rollup_message_id is not None:
+        pin_fn = getattr(adapter, "pin_message", None)
+        if callable(pin_fn):
+            try:
+                await pin_fn(main_channel_id, rollup_message_id)
+            except Exception:
+                logger.warning(
+                    "failed to pin rollup message %s on channel %s",
+                    rollup_message_id, main_channel_id, exc_info=True,
+                )
+
+    # Persist rollup_message_id + initial stream_status to disk runstate.
+    if rollup_message_id is not None:
+        try:
+            write_project_runstate(
+                scope_id, slug,
+                rollup_message_id=rollup_message_id,
+                stream_status=initial_status,
+            )
+        except Exception:
+            logger.warning(
+                "failed to persist rollup_message_id/stream_status for %s/%s",
+                scope_id, slug, exc_info=True,
+            )
+
+    # Attach rollup state to every live stream session so the auto-emit
+    # hook (and any future on-thread reader) can find it without a disk
+    # round-trip. Each stream session also gets ``project_main_channel_id``
+    # — distinct from its own ``main_channel_id`` (which is the stream's
+    # own channel).
+    for entry, session, _task in bootstrapped:
+        try:
+            session.project_main_channel_id = main_channel_id
+            session.rollup_message_id = rollup_message_id
+            session.stream_status = initial_status
+        except Exception:
+            logger.debug(
+                "could not attach rollup attrs to session %s",
+                entry.session_key, exc_info=True,
+            )
+
+    # Find the orchestrator session (same scope_id+slug, no stream_name)
+    # in the router and stash the same rollup state so its post-approval
+    # turn — and any future orchestrator-side reader — see consistent
+    # values without rereading disk.
+    try:
+        router = getattr(runner, "_session_router", None)
+        sessions_dict = getattr(router, "_sessions", None) if router else None
+        if isinstance(sessions_dict, dict):
+            for sess in list(sessions_dict.values()):
+                if (
+                    getattr(sess, "scope_id", None) == scope_id
+                    and getattr(sess, "slug", None) == slug
+                    and getattr(sess, "stream_name", None) is None
+                ):
+                    sess.rollup_message_id = rollup_message_id
+                    sess.stream_status = initial_status
+                    sess.main_channel_id = main_channel_id
+                    break
+    except Exception:
+        logger.debug(
+            "orchestrator session attach failed for %s/%s",
+            scope_id, slug, exc_info=True,
         )
 
     return StreamBootstrapResult(streams=streams, summary_message=summary)

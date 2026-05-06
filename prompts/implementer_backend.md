@@ -59,9 +59,19 @@ different path until you understand why.
    acceptance criterion in your stream is met and tests pass.  Then
    STOP and wait — the operator reacts to confirm review readiness.
 
-6. **Communicate progress** with concise `discord_post_message` calls
-   to your stream channel.  Operators read these in real time;
-   prioritize clarity over completeness.
+6. **Communicate sparingly.** The gateway now auto-posts a one-line
+   progress event to your stream channel for every `write_file`,
+   `patch`, `terminal`, `workflow_checkpoint`, `workflow_review_task`,
+   and `workflow_stream_signal` call.  Do NOT duplicate that with
+   manual `discord_post_message` calls — the channel will get noisy.
+   Use `discord_post_message` only for things the auto-emitter cannot
+   convey: errors that need human eyes, decisions that need confirmation,
+   or short status text on a slow turn.
+
+7. **Cross-stream coordination** uses `workflow_stream_signal` —
+   point-to-point from your stream to a sibling stream.  Use it ONLY
+   when another stream actually needs the information (e.g. an API
+   contract change a sibling depends on).  It is not a chat tool.
 
 ## Tool usage rules
 

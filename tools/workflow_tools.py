@@ -1812,6 +1812,44 @@ WORKFLOW_REVIEW_TASK_SCHEMA = {
     },
 }
 
+
+WORKFLOW_STREAM_SIGNAL_SCHEMA = {
+    "name": "workflow_stream_signal",
+    "description": (
+        "Send a concise coordination message from the current stream to "
+        "another stream in the same project. Direct point-to-point — does "
+        "not relay through the orchestrator. Use sparingly: only when "
+        "another stream actually needs the information (e.g. an API "
+        "contract change a sibling depends on)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "project_name": {
+                "type": "string",
+                "description": "Project slug; auto-filled from session context.",
+            },
+            "scope_id": {
+                "type": "string",
+                "description": "Optional scope id (Discord category id); auto-filled from context.",
+            },
+            "stream_name": {
+                "type": "string",
+                "description": "Source stream; auto-filled from context.",
+            },
+            "target_stream": {
+                "type": "string",
+                "description": "The sibling stream to signal. Must exist in the same project.",
+            },
+            "message": {
+                "type": "string",
+                "description": "Short coordination message; one paragraph max.",
+            },
+        },
+        "required": ["project_name", "target_stream", "message"],
+    },
+}
+
 WORKFLOW_STATUS_SCHEMA = {
     "name": "workflow_status",
     "description": (
@@ -2700,6 +2738,176 @@ def workflow_review_task(
 
 
 # =============================================================================
+# Tool: workflow_stream_signal
+# =============================================================================
+
+def workflow_stream_signal(
+    project_name: str,
+    target_stream: str,
+    message: str,
+    stream_name: str = "",
+    scope_id: str | None = None,
+) -> str:
+    """Direct point-to-point signal from one stream to a sibling stream.
+
+    The auto-bind dispatcher fills ``project_name`` (from ``ctx.slug``),
+    ``stream_name`` (source — from ``ctx.stream_name``), and ``scope_id``;
+    the agent only chooses ``target_stream`` and ``message``.
+
+    Resolves the target channel id from the project runstate's
+    ``stream_status`` map (written at bootstrap time), and falls back to
+    the per-stream runstate. Posts ``📨 from `<source>`: <message>`` to
+    the target channel via the ambient adapter+loop on the dispatch
+    context. Returns a JSON envelope describing what was attempted.
+    """
+    # Codex review (Critical): server-side override of trust-sensitive
+    # identity fields. Auto-bind only fills *blanks*; an agent that
+    # supplies a forged ``stream_name`` / ``scope_id`` / ``project_name``
+    # would otherwise be able to spoof its source or signal across
+    # projects. When a live dispatch context is bound, it always wins.
+    from tools.registry import get_dispatch_context
+
+    ctx = get_dispatch_context()
+    if ctx is not None:
+        ctx_scope = getattr(ctx, "scope_id", None)
+        ctx_slug = getattr(ctx, "slug", None)
+        ctx_stream = getattr(ctx, "stream_name", None)
+        if ctx_scope:
+            scope_id = ctx_scope
+        if ctx_slug:
+            project_name = ctx_slug
+        if ctx_stream:
+            stream_name = ctx_stream
+
+    if not project_name or not project_name.strip():
+        return tool_error("project_name is required")
+    if not target_stream or not target_stream.strip():
+        return tool_error("target_stream is required")
+    if not isinstance(message, str) or not message.strip():
+        return tool_error("message is required")
+    if not stream_name or not stream_name.strip():
+        return tool_error(
+            "stream_name (source) is required; auto-bind should have "
+            "supplied it from session context."
+        )
+    if target_stream.strip() == stream_name.strip():
+        return tool_error("target_stream cannot equal source stream_name")
+    # Codex review (Suggestion): bound message length so a single tool
+    # call cannot flood a sibling channel; collapse internal whitespace.
+    message_norm = " ".join(str(message).split())
+    if len(message_norm) > 500:
+        message_norm = message_norm[:499] + "…"
+
+    slug = slugify(project_name)
+    if not slug:
+        return tool_error(f"Could not derive a valid slug from '{project_name}'")
+
+    # Look up the target stream's channel id under the same project's
+    # disk runstate. We never search a global channel list — isolation
+    # rides on ``scope_id`` (Discord category) + ``slug`` here.
+    from hermes_cli.runstate import (
+        _read_project_runstate_snapshot,
+        _runstate_path_stream,
+    )
+
+    target_channel_id: str | None = None
+    snapshot = _read_project_runstate_snapshot(scope_id, slug) or {}
+    streams_map = snapshot.get("stream_status") or {}
+    if isinstance(streams_map, dict):
+        entry = streams_map.get(target_stream)
+        if isinstance(entry, dict):
+            tcid = entry.get("channel_id")
+            if isinstance(tcid, str) and tcid:
+                target_channel_id = tcid
+
+    if target_channel_id is None:
+        # Fallback: per-stream runstate (older bootstrap recovery path).
+        try:
+            stream_path = _runstate_path_stream(scope_id, slug, target_stream)
+            if stream_path.is_file():
+                stream_snap = json.loads(stream_path.read_text(encoding="utf-8"))
+                if isinstance(stream_snap, dict):
+                    cid = stream_snap.get("channel_id")
+                    if isinstance(cid, str) and cid:
+                        target_channel_id = cid
+        except Exception:
+            pass
+
+    if not target_channel_id:
+        return tool_error(
+            f"target stream '{target_stream}' not found under project "
+            f"'{slug}' (scope={scope_id!r})"
+        )
+
+    # Reuse the same ctx fetched above for loop+adapter.
+    loop = getattr(ctx, "loop", None) if ctx is not None else None
+    adapter = getattr(ctx, "adapter", None) if ctx is not None else None
+
+    # Codex review (Important): sanitize agent-authored body before
+    # sending. Bot-generated text must not be able to emit @everyone /
+    # role mentions / channel mentions.
+    safe_message = (
+        message_norm
+        .replace("@everyone", "@\u200beveryone")
+        .replace("@here", "@\u200bhere")
+        .replace("<@", "<@\u200b")
+        .replace("<#", "<#\u200b")
+        .replace("<&", "<&\u200b")
+    )
+    line = f"📨 from `{stream_name.strip()}`: {safe_message}"
+
+    if loop is None or adapter is None:
+        # No live gateway — record the intent so callers / tests still
+        # see a structured response, but flag delivery as deferred.
+        return json.dumps({
+            "success": False,
+            "deferred": True,
+            "reason": "no live gateway adapter on dispatch context",
+            "source_stream": stream_name.strip(),
+            "target_stream": target_stream,
+            "channel_id": target_channel_id,
+            "message": message_norm,
+        }, ensure_ascii=False)
+
+    # Codex review (Important): wait briefly so the caller sees an
+    # honest success/failure rather than blind fire-and-forget. Cap at
+    # 5s so a stuck Discord call doesn't block the agent thread.
+    try:
+        import asyncio as _asyncio
+        future = _asyncio.run_coroutine_threadsafe(
+            adapter.send(target_channel_id, line), loop,
+        )
+    except Exception as exc:
+        return tool_error(
+            f"failed to schedule signal to '{target_stream}': "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    sent_ok = True
+    sent_error: str | None = None
+    try:
+        send_result = future.result(timeout=5.0)
+        ok = getattr(send_result, "success", None)
+        if ok is False:
+            sent_ok = False
+            sent_error = getattr(send_result, "error", None) or "send returned success=False"
+    except Exception as exc:
+        # Treat timeout / network error as "scheduled but unconfirmed";
+        # do NOT raise into the agent — observability over correctness.
+        sent_ok = False
+        sent_error = f"{type(exc).__name__}: {exc}"
+
+    return json.dumps({
+        "success": sent_ok,
+        "source_stream": stream_name.strip(),
+        "target_stream": target_stream,
+        "channel_id": target_channel_id,
+        "message": message_norm,
+        **({"error": sent_error} if sent_error else {}),
+    }, ensure_ascii=False)
+
+
+# =============================================================================
 # Registry
 # =============================================================================
 
@@ -2847,4 +3055,19 @@ registry.register(
     ),
     check_fn=check_workflow_requirements,
     emoji="🔍",
+)
+
+registry.register(
+    name="workflow_stream_signal",
+    toolset="workflow-stream-mutating",
+    schema=WORKFLOW_STREAM_SIGNAL_SCHEMA,
+    handler=lambda args, **kw: workflow_stream_signal(
+        project_name=args.get("project_name", ""),
+        target_stream=args.get("target_stream", ""),
+        message=args.get("message", ""),
+        stream_name=args.get("stream_name", ""),
+        scope_id=args.get("scope_id"),
+    ),
+    check_fn=check_workflow_requirements,
+    emoji="📨",
 )

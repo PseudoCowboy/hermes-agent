@@ -153,7 +153,17 @@ def _build_stream_sandbox(session: "LongLivedSession") -> Optional[SandboxedTool
         # guard ContextVar in registry.py preventing re-entry.
         from tools.registry import registry as _global_registry
 
-        return build_stream_sandbox(root, registry=_global_registry)
+        # Cross-stream-visibility phase: ``workflow_stream_signal`` is
+        # registered under ``workflow-stream-mutating`` and the agent
+        # uses it to coordinate with sibling streams. The sandbox's
+        # allowlist must include it explicitly because the default
+        # allowlist only covers file/terminal tools — without this
+        # entry, sandbox dispatch would refuse the call.
+        return build_stream_sandbox(
+            root,
+            registry=_global_registry,
+            extra_tools=["workflow_stream_signal"],
+        )
     except Exception:
         logger.exception(
             "implementer_worker: failed to build sandbox for %s root=%s",
@@ -282,6 +292,15 @@ async def implementer_worker(
     agent = None  # lazy-construct on first inbound
     turn_count = 0
 
+    # Capture the gateway's running loop once at worker startup so the
+    # tool-dispatch auto-emit hook (cross-stream-visibility phase) can
+    # ``run_coroutine_threadsafe`` Discord posts back from the worker
+    # *thread* the agent runs on.
+    try:
+        _gateway_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _gateway_loop = None
+
     def _build_dispatch_ctx() -> ToolDispatchContext:
         # Re-built each turn so a future field that varies per turn
         # picks up; today everything is stable for the session lifetime.
@@ -297,6 +316,13 @@ async def implementer_worker(
             # sets ``session.closed = True`` while the to-thread agent
             # may still be issuing tool calls; this gates them.
             closed_check=lambda: bool(getattr(session, "closed", False)),
+            # Cross-stream-visibility phase: the auto-emit progress hook
+            # in tools/registry.py needs a live asyncio loop + adapter +
+            # runner reference so it can fire Discord posts and trigger
+            # rollup updates from the worker thread.
+            loop=_gateway_loop,
+            adapter=adapter,
+            runner=runner,
         )
 
     while True:

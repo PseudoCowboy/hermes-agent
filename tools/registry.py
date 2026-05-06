@@ -75,6 +75,21 @@ class ToolDispatchContext:
     # args and forces a workdir) before reaching the handler.  Typed
     # ``Any`` to avoid an import cycle with ``tools.sandboxed_toolset``.
     sandbox: Optional[Any] = field(default=None, compare=False)
+    # Gateway asyncio loop + platform adapter (cross-stream-visibility phase).
+    # Tools dispatched on a worker *thread* (via ``asyncio.to_thread``) need
+    # both to fire-and-forget post Discord events back into the channel:
+    #   ``asyncio.run_coroutine_threadsafe(adapter.send(...), loop)``.
+    # Optional so tests / non-Discord call sites can omit them; the auto-emit
+    # hook in :meth:`ToolRegistry.dispatch` silently skips when either is None.
+    # ``compare=False`` keeps the dataclass hashable / cheap to compare even
+    # though the loop & adapter are not value-types.
+    loop: Optional[Any] = field(default=None, compare=False)
+    adapter: Optional[Any] = field(default=None, compare=False)
+    # Gateway runner reference (cross-stream-visibility phase).  Lets the
+    # auto-emit hook resolve sibling sessions / project rollup state via
+    # ``runner._session_router._sessions`` without importing the gateway.
+    # Optional; the hook silently skips status-rollup updates when None.
+    runner: Optional[Any] = field(default=None, compare=False)
 
 
 # Tool-arg keys that auto-bind from context when the arg is missing or
@@ -162,6 +177,47 @@ def _sandbox_pass_through_scope():
         _sandbox_pass_through.reset(token)
 
 
+# Reentrancy guard for the auto-emit progress hook (cross-stream-visibility
+# phase).  When the hook posts a Discord event via ``adapter.send`` or
+# triggers ``update_stream_status``, neither path should be intercepted by
+# another auto-emit on a nested registry call.  Mirrors the
+# ``_sandbox_pass_through`` pattern above.
+_progress_emit_pass_through: "ContextVar[bool]" = ContextVar(
+    "hermes_tool_progress_emit_pass_through", default=False
+)
+
+
+@contextmanager
+def _progress_emit_scope():
+    """Mark the current dispatch as inside the progress-emission helper."""
+    token = _progress_emit_pass_through.set(True)
+    try:
+        yield
+    finally:
+        _progress_emit_pass_through.reset(token)
+
+
+# One-shot tracker for the (scope_id, slug, stream_name) "working"
+# transition (cross-stream-visibility phase).  We need to fire a
+# ``update_stream_status(..., "working")`` exactly once per stream.  The
+# set is process-local; disk-side ``stream_status`` in the project
+# runstate is the recovery-truth source.  Lock guards add/contains.
+import threading as _threading  # noqa: E402  (intentional late import)
+_streams_seen_working: "Set[tuple[str, str, str]]" = set()
+_streams_seen_working_lock = _threading.Lock()
+
+
+def get_dispatch_context() -> "Optional[ToolDispatchContext]":
+    """Return the ambient :class:`ToolDispatchContext`, if any.
+
+    Public accessor over the private ``_dispatch_context_var`` ContextVar.
+    Workflow handlers and the auto-emit hook need to read ``loop`` /
+    ``adapter`` / ``stream_name`` without depending on the ContextVar
+    being a stable name.
+    """
+    return _dispatch_context_var.get()
+
+
 @contextmanager
 def use_dispatch_context(context: "Optional[ToolDispatchContext]"):
     """Bind *context* as the ambient dispatch context for the duration.
@@ -175,6 +231,253 @@ def use_dispatch_context(context: "Optional[ToolDispatchContext]"):
         yield context
     finally:
         _dispatch_context_var.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# Auto-emit progress events (cross-stream-visibility phase)
+# ---------------------------------------------------------------------------
+# Maps a qualifying mutating tool name to a formatter that takes
+# (stream, args, result) and returns the one-line Discord message.
+# Read-only tools (read_file, search_files, workflow_status, anything
+# starting with discord_) MUST NOT appear here — that's the whole point.
+_PROGRESS_PREVIEW_MAX = 120
+
+
+def _preview(value: Any) -> str:
+    """Compact, single-line preview of a value capped at 120 chars."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    s = " ".join(s.split())  # collapse internal whitespace
+    if len(s) > _PROGRESS_PREVIEW_MAX:
+        s = s[:_PROGRESS_PREVIEW_MAX - 1] + "…"
+    return s
+
+
+def _fmt_path(args: dict) -> str:
+    """Pull a short basename from any path-bearing arg."""
+    for key in ("path", "file_path"):
+        v = args.get(key)
+        if v:
+            try:
+                return Path(str(v)).name or str(v)
+            except Exception:
+                return str(v)
+    return ""
+
+
+def _fmt_terminal(args: dict) -> str:
+    """Show only the executable name from a terminal command.
+
+    Codex review (Critical): the previous version posted the full
+    command, which routinely contains tokens / signed URLs / env
+    assignments. We strip to the first whitespace-separated token and
+    show a short suffix indicating arg count.
+    """
+    raw = args.get("command") or args.get("cmd") or ""
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # First token only — works for ``foo --flag``, ``/usr/bin/foo a b``,
+    # and single-arg invocations alike.
+    parts = s.split(None, 1)
+    head = parts[0]
+    # Strip any path prefix so ``/usr/local/bin/python3`` -> ``python3``.
+    try:
+        head = Path(head).name or head
+    except Exception:
+        pass
+    head = head[:32]
+    extra_args = 0
+    if len(parts) > 1:
+        # Cheap arg-count for hint; not parsed shell-aware on purpose.
+        extra_args = len(parts[1].split())
+    suffix = f" (+{extra_args} args)" if extra_args else ""
+    return f"{head}{suffix}"
+
+
+def _safe_discord_text(text: str) -> str:
+    """Neutralise Discord mentions in bot-generated messages.
+
+    Codex review (Important): checkpoint notes, review summaries, and
+    signal messages flow from agents into Discord channels. Without
+    sanitization, an agent (or attacker-controlled tool output) could
+    emit ``@everyone`` / ``@here`` / ``<@&role>`` / ``<#channel>``.
+    Insert a zero-width space after the trigger char so Discord stops
+    treating it as a mention. Idempotent and does not alter the visible
+    intent of legitimate text.
+    """
+    if not text:
+        return ""
+    # \u200b is zero-width space; safe to append after `@`.
+    return (
+        text
+        .replace("@everyone", "@\u200beveryone")
+        .replace("@here", "@\u200bhere")
+        .replace("<@", "<@\u200b")
+        .replace("<#", "<#\u200b")
+        .replace("<&", "<&\u200b")
+    )
+
+
+_PROGRESS_FORMATTERS: Dict[str, Callable[[str, dict, str], str]] = {
+    "write_file": lambda stream, args, _r: f"✏️ `{stream}` wrote `{_fmt_path(args)}`",
+    "patch": lambda stream, args, _r: f"✏️ `{stream}` patched `{_fmt_path(args)}`",
+    "terminal": lambda stream, args, _r: (
+        f"⚙️ `{stream}` ran `{_fmt_terminal(args)}`"
+    ),
+    "workflow_checkpoint": lambda stream, args, _r: (
+        f"📋 `{stream}` checkpoint: {_safe_discord_text(_preview(args.get('note') or ''))}"
+    ),
+    "workflow_review_task": lambda stream, args, _r: (
+        f"📋 `{stream}` review handoff: "
+        f"{_safe_discord_text(_preview(args.get('summary') or ''))}"
+    ),
+    "workflow_stream_signal": lambda stream, args, _r: (
+        f"📋 `{stream}` signaled `{args.get('target_stream', '')}`: "
+        f"{_safe_discord_text(_preview(args.get('message') or ''))}"
+    ),
+}
+
+
+def _result_is_error(result: Any) -> bool:
+    """True if the tool result is a JSON object with a top-level ``error`` key."""
+    if not isinstance(result, str):
+        return False
+    try:
+        decoded = json.loads(result)
+    except Exception:
+        return False
+    return isinstance(decoded, dict) and "error" in decoded
+
+
+def _maybe_emit_tool_progress(
+    name: str,
+    args: dict,
+    result: Any,
+    ctx: "Optional[ToolDispatchContext]",
+) -> None:
+    """Best-effort: post a one-line stream-channel event after a successful tool call.
+
+    Silent no-op when any precondition isn't met: ctx is None / not bound,
+    no stream_name (orchestrator turn), no channel_id, no loop, no adapter,
+    we're already inside the emission scope, the tool isn't in the
+    qualifying mutating bucket, or the result parses to a top-level
+    {"error": ...}. All exceptions are swallowed; observability MUST NOT
+    fail a tool call.
+    """
+    if _progress_emit_pass_through.get():
+        return
+    if not isinstance(ctx, ToolDispatchContext):
+        return
+    stream = getattr(ctx, "stream_name", None)
+    channel_id = getattr(ctx, "channel_id", None)
+    loop = getattr(ctx, "loop", None)
+    adapter = getattr(ctx, "adapter", None)
+    if not stream or not channel_id or loop is None or adapter is None:
+        return
+    formatter = _PROGRESS_FORMATTERS.get(name)
+    if formatter is None:
+        return
+    if _result_is_error(result):
+        return
+    try:
+        line = formatter(stream, args or {}, result if isinstance(result, str) else "")
+    except Exception:
+        logger.debug("auto-emit formatter raised for tool=%s", name, exc_info=True)
+        return
+    # Schedule the Discord post + status transition under the emission
+    # scope so a nested registry call (e.g. update_stream_status -> dispatch)
+    # cannot recursively emit another progress event.
+    try:
+        with _progress_emit_scope():
+            try:
+                import asyncio as _asyncio
+                _asyncio.run_coroutine_threadsafe(
+                    adapter.send(channel_id, line), loop,
+                )
+            except Exception:
+                logger.debug(
+                    "auto-emit send failed for tool=%s ch=%s", name, channel_id,
+                    exc_info=True,
+                )
+            # First-time-working transition for (scope_id, slug, stream_name).
+            scope_id = getattr(ctx, "scope_id", None) or ""
+            slug = getattr(ctx, "slug", None) or ""
+            runner = getattr(ctx, "runner", None)
+            if scope_id and slug and runner is not None:
+                key = (scope_id, slug, stream)
+                fire = False
+                with _streams_seen_working_lock:
+                    if key not in _streams_seen_working:
+                        _streams_seen_working.add(key)
+                        fire = True
+                if fire:
+                    try:
+                        from gateway.project_status import update_stream_status
+                        import asyncio as _asyncio2
+                        _asyncio2.run_coroutine_threadsafe(
+                            update_stream_status(
+                                runner=runner,
+                                scope_id=scope_id,
+                                slug=slug,
+                                stream_name=stream,
+                                new_status="working",
+                                adapter=adapter,
+                            ),
+                            loop,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "working-transition schedule failed for %s/%s/%s",
+                            scope_id, slug, stream, exc_info=True,
+                        )
+
+            # Complete-transition: a successful ``workflow_review_task``
+            # with ``verdict="approved"`` is the implementer-handoff
+            # signal per the cross-stream-visibility spec.
+            #
+            # Codex review (Important): require ``args["stream"]`` to
+            # match the ambient ``ctx.stream_name``. Otherwise an
+            # approval recorded against a sibling stream (or the wrong
+            # task on this stream) would mark the WRONG rollup row as
+            # complete. The handler-level ``_validate_review_actor``
+            # already constrains who can record what; this guard is the
+            # complementary piece on the rollup side.
+            if (
+                name == "workflow_review_task"
+                and (args or {}).get("verdict") == "approved"
+                and scope_id and slug and runner is not None
+                and (args or {}).get("stream") == stream
+            ):
+                try:
+                    from gateway.project_status import update_stream_status
+                    import asyncio as _asyncio3
+                    _asyncio3.run_coroutine_threadsafe(
+                        update_stream_status(
+                            runner=runner,
+                            scope_id=scope_id,
+                            slug=slug,
+                            stream_name=stream,
+                            new_status="complete",
+                            detail="review approved",
+                            adapter=adapter,
+                        ),
+                        loop,
+                    )
+                except Exception:
+                    logger.debug(
+                        "complete-transition schedule failed for %s/%s/%s",
+                        scope_id, slug, stream, exc_info=True,
+                    )
+    except Exception:
+        logger.debug("auto-emit outer failed for tool=%s", name, exc_info=True)
+
+
+def _reset_streams_seen_working_for_tests() -> None:
+    """Test-only helper: clear the one-shot working tracker."""
+    with _streams_seen_working_lock:
+        _streams_seen_working.clear()
 
 
 class ToolEntry:
@@ -449,11 +752,22 @@ class ToolRegistry:
         try:
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+                result = _run_async(entry.handler(args, **kwargs))
+            else:
+                result = entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+        # Auto-emit progress event after a successful handler return.
+        # Best-effort, fully internal: never raises past this boundary.
+        # The helper's own preconditions (stream_name set, loop+adapter
+        # present, qualifying tool, non-error result) decide whether to
+        # actually post anything.
+        try:
+            _maybe_emit_tool_progress(name, args, result, ctx if isinstance(ctx, ToolDispatchContext) else None)
+        except Exception:
+            logger.debug("auto-emit hook raised (suppressed) for tool=%s", name, exc_info=True)
+        return result
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

@@ -1,0 +1,19 @@
+{
+  "taskId": 1,
+  "taskTitle": "T1: Write manifest.json (MV3 — action, content_scripts, background service_worker, storage permission)",
+  "streamType": "extension-core",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "manifest.json present and valid MV3 with required sections",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: manifest MV3"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}

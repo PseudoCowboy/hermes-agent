@@ -1,0 +1,51 @@
+{
+  "tasks": [
+    {
+      "id": 1,
+      "title": "K1: Create icons at 16/48/128 px (simple glyph, no art)",
+      "status": "approved",
+      "owner": "impl-pkg",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: icons referenced by manifest",
+        "workstreams/packaging/evidence/review-task-1-round-1.json"
+      ]
+    },
+    {
+      "id": 2,
+      "title": "K2: Write README.md (install flow, no-network design, usage)",
+      "status": "approved",
+      "owner": "impl-pkg",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: README present",
+        "workstreams/packaging/evidence/review-task-2-round-1.json"
+      ]
+    },
+    {
+      "id": 3,
+      "title": "K3: Smoke-test Load Unpacked flow and record result in progress.md",
+      "status": "approved",
+      "owner": "impl-pkg",
+      "reviewer": "reviewer-a",
+      "dependsOn": [],
+      "reviewRounds": 1,
+      "updatedAt": "2026-04-23T07:22:52Z",
+      "evidence": [
+        "groups/shared_project/active/chromewordtranslator/artifacts/extension/",
+        "acceptance: loads without errors",
+        "workstreams/packaging/evidence/review-task-3-round-1.json"
+      ]
+    }
+  ],
+  "currentTask": 1,
+  "lastReviewedBy": "reviewer-a"
+}

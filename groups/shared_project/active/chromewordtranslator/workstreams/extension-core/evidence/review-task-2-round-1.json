@@ -1,0 +1,19 @@
+{
+  "taskId": 2,
+  "taskTitle": "T2: Create seed-dictionary.js with at least 20 common EN-to-ZH pairs",
+  "streamType": "extension-core",
+  "reviewer": "reviewer-a",
+  "verdict": "approved",
+  "round": 1,
+  "timestamp": "2026-04-23T07:22:52Z",
+  "summary": "Seed dictionary exports 22 pairs including cat/dog",
+  "behaviorCoverage": [
+    "acceptance criterion verified by manual inspection"
+  ],
+  "issues": [],
+  "missingEvidence": [],
+  "artifacts": [
+    "acceptance: seed dictionary size"
+  ],
+  "nextAction": "Task approved — ready for completion or next work item"
+}
