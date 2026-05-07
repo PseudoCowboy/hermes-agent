@@ -1,0 +1,79 @@
+# Mythos configuration. Copy to mythos/config.yaml or set MYTHOS_CONFIG.
+# Env vars override anything below — DISCORD_BOT_TOKEN, DISCORD_GUILD_ID,
+# MYTHOS_MAIN_CHANNEL_ID, MYTHOS_WORKSPACE_DIR.
+
+discord:
+  # Numeric IDs (right-click → Copy ID in Discord with developer mode on).
+  guild_id: null            # e.g. 123456789012345678
+  main_channel_id: null     # e.g. 123456789012345678
+  # Token: prefer env var DISCORD_BOT_TOKEN
+  token: null
+
+# Where per-project working directories are created.
+workspace_dir: ~/.hermes/mythos
+
+# When true, specialist agents only respond in their assigned channel
+# (FR-018). Don't disable in production.
+confine_specialists: true
+
+# User must reply with one of these (case-insensitive prefix) in the
+# project channel to approve the design.
+approval_keywords:
+  - approve
+  - approved
+  - lgtm
+  - ship it
+  - go
+
+# Max revision rounds before the user is asked to decide.
+max_revision_rounds: 2
+
+# Per-agent overrides. Defaults match the build instructions; override only
+# if you need a different model, base URL, or extra CLI flags.
+agents:
+  main:
+    model: claude-opus-4.7-1m-internal
+    effort: high
+    base_url: http://127.0.0.1:4141
+    env:
+      ANTHROPIC_BASE_URL: http://127.0.0.1:4141
+      ANTHROPIC_AUTH_TOKEN: dummy
+      ANTHROPIC_MODEL: claude-opus-4.7-1m-internal
+    timeout_seconds: 900
+  draft_plan:
+    model: claude-opus-4.7-1m-internal
+    effort: high
+    base_url: http://127.0.0.1:4141
+    env:
+      ANTHROPIC_BASE_URL: http://127.0.0.1:4141
+      ANTHROPIC_AUTH_TOKEN: dummy
+      ANTHROPIC_MODEL: claude-opus-4.7-1m-internal
+    timeout_seconds: 900
+  review:
+    model: gpt-5.5
+    effort: high
+    base_url: http://127.0.0.1:4141/v1
+    env:
+      OPENAI_BASE_URL: http://127.0.0.1:4141/v1
+      OPENAI_API_KEY: dummy
+    timeout_seconds: 900
+  test:
+    model: gpt-5.5
+    effort: high
+    base_url: http://127.0.0.1:4141/v1
+    env:
+      OPENAI_BASE_URL: http://127.0.0.1:4141/v1
+      OPENAI_API_KEY: dummy
+    timeout_seconds: 900
+  frontend:
+    model: gemini-3.1-pro-preview
+    timeout_seconds: 900
+  backend:
+    model: claude-opus-4.7-1m-internal
+    effort: high
+    base_url: http://127.0.0.1:4141
+    env:
+      ANTHROPIC_BASE_URL: http://127.0.0.1:4141
+      ANTHROPIC_AUTH_TOKEN: dummy
+      ANTHROPIC_MODEL: claude-opus-4.7-1m-internal
+    timeout_seconds: 900
