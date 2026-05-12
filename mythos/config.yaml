@@ -1,0 +1,21 @@
+# Mythos default configuration. Every value here is optional — the
+# package ships with sensible defaults baked into mythos/config.py.
+# Override anything you don't want to take by env var.
+
+# Where per-project workspaces live on disk. Each project gets a
+# subdirectory named after its slug.
+workspace_root: "~/mythos/projects"
+
+# Hard cap on concurrent specialist agent invocations. Prevents thrashing
+# when many projects run in parallel.
+max_concurrent_specialists: 6
+
+# How many spec-revision rounds before Hermes escalates to the user.
+max_approval_rounds: 2
+
+# Per-CLI invocation timeout. Increase for slow local models.
+cli_timeout_seconds: 600
+
+# Discord category names get this prefix; final category becomes
+#   "<category_prefix>-<slug>" (e.g. "mythos-proj-translator-…")
+category_prefix: "mythos"
