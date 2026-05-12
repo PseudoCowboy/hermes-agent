@@ -1,0 +1,121 @@
+# Mythos Multi-Bot Identity — Spec (BMAD)
+
+**Date:** 2026-05-12
+**Status:** Approved (verbal)
+**Scope:** Extend `bench/claude-bmad` so each Mythos role posts to Discord
+under its own bot identity, instead of all roles sharing one bot.
+
+## Product Brief
+
+### Problem
+Today every agent role (Athena, Prometheus, Argus, Hephaestus, Apollo,
+Atlas) posts through a single Discord bot. Users distinguish speakers
+only by a leading `[Athena · Main]` text tag. Avatars, usernames, and
+mention semantics all collapse to a single account, which:
+- makes long project channels visually noisy
+- prevents per-role permissioning at the Discord layer
+- prevents users from filtering / muting individual agents
+
+### Goal
+Each role posts as its own Discord bot account with its own username and
+avatar. The orchestrator transparently routes each `send` to the right
+underlying connection. No change to the project lifecycle, channel
+layout, or CLI invocation contracts.
+
+### Non-goals
+- Per-project token rotation
+- Slash commands / interactions
+- Any role besides the six in `Role` enum getting its own bot
+- Replacing the in-memory test double
+
+## Requirements (PRD)
+
+| # | Requirement |
+|---|---|
+| R1 | Operator can configure 1..N bot tokens, one per role, via `MYTHOS_BOT_TOKENS` (JSON dict). |
+| R2 | If `MYTHOS_BOT_TOKENS` is absent but legacy `DISCORD_BOT_TOKEN` is set, the system falls back to single-bot mode (current behavior). |
+| R3 | If a role has no token configured in multi-bot mode, its messages fall back to Athena's bot. |
+| R4 | Athena's bot is the only inbound listener and the only client that creates categories/channels. |
+| R5 | In multi-bot mode, the `[Role · Title]` text prefix is dropped from outbound messages (identity is conveyed by the bot's Discord username). |
+| R6 | All existing tests in `tests/mythos/` continue to pass without modification of their assertions about the in-memory IO. |
+| R7 | New tests cover: config parsing of `MYTHOS_BOT_TOKENS`, multi-bot routing, Athena fallback, and that prefix-stripping only applies in multi-bot mode. |
+
+## Architecture
+
+### Components touched
+- `mythos/config.py` — new field `bot_tokens: Dict[Role, str]`, parses
+  `MYTHOS_BOT_TOKENS` JSON env var.
+- `mythos/discord_io.py` —
+  - `DiscordIO.send` signature gains optional `role: Optional[Role] = None`.
+  - New `MultiBotDiscordIO` holds one `RealDiscordIO`-like connection
+    per role. Athena's connection is the inbound + channel-mgmt one;
+    other roles run minimal send-only clients.
+  - `InMemoryDiscordIO.send` accepts and records `role` for tests.
+- `mythos/orchestrator.py` — `_post` / `_post_long` / `_post_error`
+  pass `role=` to `discord.send`. Tag prefix is conditional on
+  `discord.uses_role_identity` flag (true for `MultiBotDiscordIO`).
+- `mythos/__main__.py` — picks `MultiBotDiscordIO` if `cfg.bot_tokens`,
+  else `RealDiscordIO`.
+- `mythos/SETUP.md` — adds a "Multi-bot mode" section.
+
+### Data flow
+
+```
+            ┌──────────────────────────────────────────────┐
+            │              MythosOrchestrator              │
+            │   _post(channel_id, role, body)              │
+            └────────────────┬─────────────────────────────┘
+                             │ send(channel_id, body, role=role)
+                             ▼
+                ┌────────────────────────────┐
+                │     MultiBotDiscordIO      │
+                │  clients: {role: RealIO}   │
+                └─────┬──────────────────────┘
+                      │ pick clients[role] or clients[ATHENA]
+                      ▼
+              one of N discord.py Bot connections
+```
+
+Inbound: only Athena's underlying `discord.py` client registers an
+`on_message` handler; the orchestrator-facing `on_message` registration
+is delegated to it.
+
+Channel/category creation: routed unconditionally through Athena's
+client (only one needs `Manage Channels`).
+
+### Config schema
+
+```bash
+# Multi-bot mode (preferred)
+export MYTHOS_BOT_TOKENS='{"athena":"MTQ...","prometheus":"MTQ...","argus":"MTQ...","hephaestus":"MTQ...","apollo":"MTQ...","atlas":"MTQ..."}'
+
+# Legacy single-bot fallback (still works, unchanged behavior)
+export DISCORD_BOT_TOKEN='MTQ...'
+```
+
+If both are set, `MYTHOS_BOT_TOKENS` wins. Roles missing from the JSON
+fall back to whichever bot is bound to Athena (which itself falls back
+to `DISCORD_BOT_TOKEN` if `"athena"` is absent from the JSON).
+
+### Backwards compatibility
+- Single-bot deployments: no env change, no behavioral change. The
+  `[Role · Title]` text prefix continues to identify speakers.
+- Existing integration tests in `tests/mythos/` use `InMemoryDiscordIO`,
+  which keeps the prefix (it sets `uses_role_identity = False`). All
+  existing assertions on message bodies remain valid.
+
+## Test plan
+
+| Test | What it proves |
+|---|---|
+| `test_config_parses_bot_tokens_json` | `MYTHOS_BOT_TOKENS` env var deserializes into `cfg.bot_tokens`. |
+| `test_config_falls_back_to_single_bot` | When only `DISCORD_BOT_TOKEN` set, `bot_tokens` is empty. |
+| `test_multibot_io_routes_by_role` | `MultiBotDiscordIO.send(..., role=R)` calls the R-specific client; missing roles route to Athena. |
+| `test_orchestrator_drops_prefix_in_multibot_mode` | When `discord.uses_role_identity` is True, posted bodies omit `[Role · Title]`. |
+| `test_orchestrator_keeps_prefix_in_single_bot_mode` | Default in-memory IO still sees prefixed bodies — guards existing tests. |
+| Existing `tests/mythos/` suite | No regressions. |
+
+## Out of scope (this change)
+- Distinct per-role permissions in Discord (operator concern; document only).
+- Web-based bot management UI.
+- Migrating channel ownership between bots.

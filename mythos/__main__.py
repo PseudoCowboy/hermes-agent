@@ -12,7 +12,7 @@ import os
 import sys
 
 from mythos.config import load_config
-from mythos.discord_io import RealDiscordIO
+from mythos.discord_io import MultiBotDiscordIO, RealDiscordIO
 from mythos.orchestrator import MythosOrchestrator
 from mythos.project_manager import ProjectManager
 from mythos.supervisor import Supervisor
@@ -20,8 +20,8 @@ from mythos.supervisor import Supervisor
 
 def _check_required(cfg) -> None:
     missing = []
-    if not cfg.discord_token:
-        missing.append("DISCORD_BOT_TOKEN")
+    if not cfg.discord_token and not cfg.bot_tokens:
+        missing.append("DISCORD_BOT_TOKEN or MYTHOS_BOT_TOKENS")
     if not cfg.discord_guild_id:
         missing.append("DISCORD_GUILD_ID")
     if not cfg.main_channel_id:
@@ -42,7 +42,10 @@ async def _main() -> None:
     cfg = load_config()
     _check_required(cfg)
 
-    discord = RealDiscordIO(token=cfg.discord_token)
+    if cfg.bot_tokens:
+        discord = MultiBotDiscordIO(tokens=cfg.bot_tokens)
+    else:
+        discord = RealDiscordIO(token=cfg.discord_token)
     pm = ProjectManager(cfg, discord)
     sup = Supervisor(cfg)
     orch = MythosOrchestrator(cfg, discord, pm, sup)

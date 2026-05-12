@@ -29,6 +29,8 @@ from typing import (
     Tuple,
 )
 
+from mythos.roles import Role
+
 
 @dataclass
 class IncomingMessage:
@@ -49,8 +51,21 @@ MessageHandler = Callable[[IncomingMessage], Awaitable[None]]
 class DiscordIO(Protocol):
     """The minimal Discord surface Mythos needs."""
 
-    async def send(self, channel_id: int, content: str) -> int:
-        """Post ``content`` to ``channel_id``; return the message id."""
+    # When True, each role's messages are posted by a distinct underlying
+    # bot identity (their Discord username/avatar conveys role), so callers
+    # should NOT prefix outbound messages with the `[Role · Title]` text tag.
+    uses_role_identity: bool
+
+    async def send(
+        self, channel_id: int, content: str, role: Optional[Role] = None
+    ) -> int:
+        """Post ``content`` to ``channel_id``; return the message id.
+
+        ``role`` selects which underlying bot identity speaks, when the
+        IO layer supports per-role identities. Implementations that don't
+        (single-bot mode, in-memory test double) must accept and ignore
+        the parameter.
+        """
         ...
 
     async def create_category(self, guild_id: int, name: str) -> int:
@@ -91,17 +106,20 @@ class InMemoryDiscordIO:
         default_factory=lambda: defaultdict(list)
     )
     _handler: Optional[MessageHandler] = None
+    uses_role_identity: bool = False
 
     def _new_id(self) -> int:
         self._next_id += 1
         return self._next_id
 
-    async def send(self, channel_id: int, content: str) -> int:
+    async def send(
+        self, channel_id: int, content: str, role: Optional[Role] = None
+    ) -> int:
         # Note: Discord's 2000-char split is exercised in the orchestrator,
         # not the IO layer; the IO layer just records what it was asked to send.
         msg_id = self._new_id()
         self.posted[channel_id].append(
-            {"message_id": msg_id, "content": content}
+            {"message_id": msg_id, "content": content, "role": role}
         )
         return msg_id
 
@@ -169,10 +187,16 @@ class RealDiscordIO:
 
     Imports are deferred to ``start()`` so the test suite never touches
     discord.py.
+
+    ``listen`` controls whether this client registers an ``on_message``
+    handler. Multi-bot deployments only let one client (Athena's) listen.
     """
 
-    def __init__(self, token: str) -> None:
+    uses_role_identity: bool = False
+
+    def __init__(self, token: str, *, listen: bool = True) -> None:
         self._token = token
+        self._listen = listen
         self._handler: Optional[MessageHandler] = None
         self._client = None  # set in start()
         self._ready = asyncio.Event()
@@ -188,9 +212,10 @@ class RealDiscordIO:
         from discord.ext import commands  # type: ignore
 
         intents = discord.Intents.default()
-        intents.message_content = True
-        intents.guild_messages = True
-        intents.dm_messages = True
+        if self._listen:
+            intents.message_content = True
+            intents.guild_messages = True
+            intents.dm_messages = True
         intents.guilds = True
 
         self._client = commands.Bot(
@@ -207,29 +232,33 @@ class RealDiscordIO:
         async def on_ready():
             adapter._ready.set()
 
-        @self._client.event
-        async def on_message(message):
-            try:
-                if message.author == self._client.user:
-                    return
-                if adapter._handler is None:
-                    return
-                await adapter._handler(
-                    IncomingMessage(
-                        channel_id=int(message.channel.id),
-                        user_id=int(message.author.id),
-                        user_name=str(message.author.display_name or message.author.name),
-                        content=message.content or "",
-                        message_id=int(message.id),
-                        is_bot=bool(message.author.bot),
+        if self._listen:
+
+            @self._client.event
+            async def on_message(message):
+                try:
+                    if message.author == self._client.user:
+                        return
+                    if adapter._handler is None:
+                        return
+                    await adapter._handler(
+                        IncomingMessage(
+                            channel_id=int(message.channel.id),
+                            user_id=int(message.author.id),
+                            user_name=str(
+                                message.author.display_name or message.author.name
+                            ),
+                            content=message.content or "",
+                            message_id=int(message.id),
+                            is_bot=bool(message.author.bot),
+                        )
                     )
-                )
-            except Exception:
-                # Never let a handler error kill the websocket loop.
-                import logging
-                logging.getLogger("mythos.discord").exception(
-                    "mythos message handler failed"
-                )
+                except Exception:
+                    # Never let a handler error kill the websocket loop.
+                    import logging
+                    logging.getLogger("mythos.discord").exception(
+                        "mythos message handler failed"
+                    )
 
         self._task = asyncio.create_task(self._client.start(self._token))
         await self._ready.wait()
@@ -243,7 +272,9 @@ class RealDiscordIO:
             except Exception:
                 pass
 
-    async def send(self, channel_id: int, content: str) -> int:
+    async def send(
+        self, channel_id: int, content: str, role: Optional[Role] = None
+    ) -> int:
         # Discord caps individual messages at 2000 chars; split safely.
         chunks = _split_2000(content)
         last_id = 0
@@ -290,3 +321,73 @@ def _split_2000(text: str) -> List[str]:
     if cur:
         chunks.append(cur)
     return chunks
+
+
+# --------------------------------------------------------------------------- #
+# Multi-bot adapter — one Discord identity per Mythos role
+# --------------------------------------------------------------------------- #
+
+class MultiBotDiscordIO:
+    """Routes outbound posts to a per-role Discord bot identity.
+
+    One ``RealDiscordIO`` is constructed per role-with-token. Athena's
+    client is the single inbound listener and the single channel/category
+    creator (Discord requires Manage Channels on whichever bot does the
+    creating, and only one needs to listen to avoid duplicate handling).
+
+    Roles without a configured token fall back to Athena's client.
+    """
+
+    uses_role_identity: bool = True
+
+    def __init__(self, tokens: Dict[Role, str]) -> None:
+        if Role.ATHENA not in tokens or not tokens[Role.ATHENA]:
+            raise ValueError(
+                "MultiBotDiscordIO requires at least an Athena token "
+                "(Athena handles inbound + channel creation)."
+            )
+        self._clients: Dict[Role, RealDiscordIO] = {}
+        for role, token in tokens.items():
+            if not token:
+                continue
+            listen = role == Role.ATHENA
+            self._clients[role] = RealDiscordIO(token=token, listen=listen)
+        self._handler: Optional[MessageHandler] = None
+
+    @property
+    def _athena(self) -> RealDiscordIO:
+        return self._clients[Role.ATHENA]
+
+    def on_message(self, handler: MessageHandler) -> None:
+        self._handler = handler
+        # Only Athena's client receives messages.
+        self._athena.on_message(handler)
+
+    async def start(self) -> None:
+        # Start all clients concurrently so login happens in parallel.
+        await asyncio.gather(*(c.start() for c in self._clients.values()))
+
+    async def close(self) -> None:
+        await asyncio.gather(
+            *(c.close() for c in self._clients.values()),
+            return_exceptions=True,
+        )
+
+    async def send(
+        self, channel_id: int, content: str, role: Optional[Role] = None
+    ) -> int:
+        client = self._clients.get(role) if role is not None else None
+        if client is None:
+            client = self._athena
+        return await client.send(channel_id, content, role=role)
+
+    async def create_category(self, guild_id: int, name: str) -> int:
+        # Channel/category creation always goes through Athena.
+        return await self._athena.create_category(guild_id, name)
+
+    async def create_text_channel(
+        self, guild_id: int, category_id: int, name: str
+    ) -> int:
+        return await self._athena.create_text_channel(
+            guild_id, category_id, name
+        )

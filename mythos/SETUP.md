@@ -56,13 +56,51 @@ bot into a Discord server you control.
 > All other channels it talks in are ones it created itself for active
 > projects.
 
+### 1d. Multi-bot mode (one Discord identity per role) — recommended
+
+By default Mythos can run with a single bot that posts on behalf of
+every role (Athena, Prometheus, Argus, Hephaestus, Apollo, Atlas) and
+distinguishes speakers via a `[Role · Title]` text prefix. For better
+UX in busy channels you can give each role its own Discord bot account
+so each speaker has its own username and avatar.
+
+1. Repeat steps 1a–1b for each role you want to split out, naming the
+   apps after the role (e.g. *Mythos · Prometheus*). Invite each bot
+   into the same guild.
+2. **Athena's bot must have `Manage Channels`** — it is the only client
+   that creates project categories/channels and the only client that
+   listens for inbound messages. The other bots only need `View
+   Channels` + `Send Messages` + `Read Message History`.
+3. Set `MYTHOS_BOT_TOKENS` to a JSON dict of `{role: token}`:
+
+   ```bash
+   export MYTHOS_BOT_TOKENS='{
+     "athena":     "MTQ...",
+     "prometheus": "MTQ...",
+     "argus":      "MTQ...",
+     "hephaestus": "MTQ...",
+     "apollo":     "MTQ...",
+     "atlas":      "MTQ..."
+   }'
+   ```
+
+   - Roles missing from the dict fall back to Athena's bot.
+   - If `"athena"` is omitted but the legacy `DISCORD_BOT_TOKEN` is set,
+     Athena uses the legacy token.
+   - When `MYTHOS_BOT_TOKENS` is unset, Mythos runs in single-bot mode
+     (legacy behavior — `DISCORD_BOT_TOKEN` only).
+
+In multi-bot mode the `[Role · Title]` text prefix is dropped from
+outbound messages because the Discord username/avatar already conveys
+the speaker.
+
 ## 2. Required environment variables
 
 Copy `mythos/.env.example` → `.env` and fill in real values.
 
 | Variable                | Purpose                                                       | Example                  |
 |-------------------------|---------------------------------------------------------------|--------------------------|
-| `DISCORD_BOT_TOKEN`     | Bot token from the Discord Developer Portal.                  | `MTIz…`                  |
+| `DISCORD_BOT_TOKEN`     | Bot token from the Discord Developer Portal. Required only in single-bot mode (see §1d). | `MTIz…` |
 | `DISCORD_GUILD_ID`      | Numeric Discord guild ID where Mythos operates.               | `1029384756`             |
 | `MYTHOS_MAIN_CHANNEL_ID`| Numeric ID of the channel users post intake messages in.      | `1029384800`             |
 | `ANTHROPIC_API_KEY`     | API key used by the Claude Code CLI underneath Athena/Prometheus/Atlas. *(Only required if your local proxy at 127.0.0.1:4141 demands it; the default config sends `dummy`.)* | `sk-ant-…` |

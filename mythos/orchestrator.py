@@ -394,20 +394,33 @@ class MythosOrchestrator:
     # ------------------------------------------------------------------ #
 
     async def _post(self, channel_id: int, role: Role, body: str) -> int:
-        return await self.discord.send(channel_id, f"{role_tag(role)} {body}")
+        if getattr(self.discord, "uses_role_identity", False):
+            return await self.discord.send(channel_id, body, role=role)
+        return await self.discord.send(
+            channel_id, f"{role_tag(role)} {body}", role=role
+        )
 
     async def _post_long(self, channel_id: int, role: Role, body: str) -> None:
         # The Discord IO layer chunks at 2000 chars; we keep our role tag
         # only on the first chunk so the rest reads naturally.
-        await self.discord.send(channel_id, f"{role_tag(role)}\n{body}")
+        if getattr(self.discord, "uses_role_identity", False):
+            await self.discord.send(channel_id, body, role=role)
+        else:
+            await self.discord.send(
+                channel_id, f"{role_tag(role)}\n{body}", role=role
+            )
 
     async def _post_error(self, channel_id: int, role: Role, out: AgentOutput) -> None:
         snippet = (out.stderr or out.text or "").strip().splitlines()
         tail = "\n".join(snippet[-10:]) if snippet else "(no output)"
-        await self.discord.send(
-            channel_id,
-            f"[error] {role_tag(role)} CLI exited {out.exit_code}.\n```\n{tail}\n```",
-        )
+        if getattr(self.discord, "uses_role_identity", False):
+            body = f"[error] CLI exited {out.exit_code}.\n```\n{tail}\n```"
+        else:
+            body = (
+                f"[error] {role_tag(role)} CLI exited {out.exit_code}.\n"
+                f"```\n{tail}\n```"
+            )
+        await self.discord.send(channel_id, body, role=role)
 
     # ------------------------------------------------------------------ #
     # Internal: schedule and track per-project background tasks.
