@@ -23,7 +23,7 @@
   inject inbound messages via `inject_user_message(channel_id, content)`.
   No `discord.py` import is needed by the test path.
 - **Agent CLIs:** `mythos/agents.StubAgent` returns a canned response per
-  role. The full Athena/Prometheus/Argus/Atlas/Apollo/Hephaestus pipeline
+  role. The full Hermes/Prometheus/Argus/Atlas/Apollo/Hephaestus pipeline
   runs end-to-end in <1.5 s with no `claude` / `codex` / `gemini` binary
   on the host. A separate `test_cli_agent.py` covers `CliAgent`'s real
   subprocess path against a 5-line shell script that emulates each CLI's

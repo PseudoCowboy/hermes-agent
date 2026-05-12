@@ -189,7 +189,7 @@ class RealDiscordIO:
     discord.py.
 
     ``listen`` controls whether this client registers an ``on_message``
-    handler. Multi-bot deployments only let one client (Athena's) listen.
+    handler. Multi-bot deployments only let one client (Hermes's) listen.
     """
 
     uses_role_identity: bool = False
@@ -330,38 +330,38 @@ def _split_2000(text: str) -> List[str]:
 class MultiBotDiscordIO:
     """Routes outbound posts to a per-role Discord bot identity.
 
-    One ``RealDiscordIO`` is constructed per role-with-token. Athena's
+    One ``RealDiscordIO`` is constructed per role-with-token. Hermes's
     client is the single inbound listener and the single channel/category
     creator (Discord requires Manage Channels on whichever bot does the
     creating, and only one needs to listen to avoid duplicate handling).
 
-    Roles without a configured token fall back to Athena's client.
+    Roles without a configured token fall back to Hermes's client.
     """
 
     uses_role_identity: bool = True
 
     def __init__(self, tokens: Dict[Role, str]) -> None:
-        if Role.ATHENA not in tokens or not tokens[Role.ATHENA]:
+        if Role.HERMES not in tokens or not tokens[Role.HERMES]:
             raise ValueError(
-                "MultiBotDiscordIO requires at least an Athena token "
-                "(Athena handles inbound + channel creation)."
+                "MultiBotDiscordIO requires at least a Hermes token "
+                "(Hermes handles inbound + channel creation)."
             )
         self._clients: Dict[Role, RealDiscordIO] = {}
         for role, token in tokens.items():
             if not token:
                 continue
-            listen = role == Role.ATHENA
+            listen = role == Role.HERMES
             self._clients[role] = RealDiscordIO(token=token, listen=listen)
         self._handler: Optional[MessageHandler] = None
 
     @property
-    def _athena(self) -> RealDiscordIO:
-        return self._clients[Role.ATHENA]
+    def _hermes(self) -> RealDiscordIO:
+        return self._clients[Role.HERMES]
 
     def on_message(self, handler: MessageHandler) -> None:
         self._handler = handler
-        # Only Athena's client receives messages.
-        self._athena.on_message(handler)
+        # Only Hermes's client receives messages.
+        self._hermes.on_message(handler)
 
     async def start(self) -> None:
         # Start all clients concurrently so login happens in parallel.
@@ -378,16 +378,16 @@ class MultiBotDiscordIO:
     ) -> int:
         client = self._clients.get(role) if role is not None else None
         if client is None:
-            client = self._athena
+            client = self._hermes
         return await client.send(channel_id, content, role=role)
 
     async def create_category(self, guild_id: int, name: str) -> int:
-        # Channel/category creation always goes through Athena.
-        return await self._athena.create_category(guild_id, name)
+        # Channel/category creation always goes through Hermes.
+        return await self._hermes.create_category(guild_id, name)
 
     async def create_text_channel(
         self, guild_id: int, category_id: int, name: str
     ) -> int:
-        return await self._athena.create_text_channel(
+        return await self._hermes.create_text_channel(
             guild_id, category_id, name
         )

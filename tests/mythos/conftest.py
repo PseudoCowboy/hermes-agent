@@ -32,7 +32,7 @@ def canned_responses(tmp_path: Path) -> Dict[Role, str]:
             "## Verdict\nVerdict: APPROVED\n\n"
             "## Comments\n- Looks reasonable.\n- Consider performance of dictionary lookup.\n"
         ),
-        Role.ATHENA: (
+        Role.HERMES: (
             "## Frontend (Apollo)\n"
             "Goal: Build the popup + content script.\n"
             "### Inputs\nApproved spec.\n### Outputs\npopup.html, content.js\n"

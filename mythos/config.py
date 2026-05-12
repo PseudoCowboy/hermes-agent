@@ -118,8 +118,8 @@ def load_config(path: Optional[Path] = None) -> MythosConfig:
 def _parse_bot_tokens(raw: str, *, fallback_token: str) -> Dict[Role, str]:
     """Parse ``MYTHOS_BOT_TOKENS`` JSON into a {Role: token} dict.
 
-    Unknown role keys are ignored. If ``athena`` is missing but a legacy
-    ``DISCORD_BOT_TOKEN`` is set, Athena gets the legacy token.
+    Unknown role keys are ignored. If ``hermes`` is missing but a legacy
+    ``DISCORD_BOT_TOKEN`` is set, Hermes gets the legacy token.
     """
     try:
         data = json.loads(raw)
@@ -133,6 +133,6 @@ def _parse_bot_tokens(raw: str, *, fallback_token: str) -> Dict[Role, str]:
         if role is None or not v:
             continue
         out[role] = str(v)
-    if Role.ATHENA not in out and fallback_token:
-        out[Role.ATHENA] = fallback_token
+    if Role.HERMES not in out and fallback_token:
+        out[Role.HERMES] = fallback_token
     return out

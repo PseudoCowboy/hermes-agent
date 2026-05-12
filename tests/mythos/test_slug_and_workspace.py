@@ -48,7 +48,7 @@ def test_workspace_role_dir_routing(tmp_path: Path):
     assert ws.role_dir(Role.ATLAS) == ws.root / "backend"
     assert ws.role_dir(Role.HEPHAESTUS) == ws.root / "tests"
     # The orchestrator-level roles operate at the project root.
-    assert ws.role_dir(Role.ATHENA) == ws.root
+    assert ws.role_dir(Role.HERMES) == ws.root
     assert ws.role_dir(Role.PROMETHEUS) == ws.root
     assert ws.role_dir(Role.ARGUS) == ws.root
 

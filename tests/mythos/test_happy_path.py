@@ -37,9 +37,9 @@ async def test_happy_path_kickoff_to_completion(
     rec = projects[0]
     slug = rec.state.slug
 
-    # 3. Athena posted an ack in #main.
+    # 3. Hermes posted an ack in #main.
     main_msgs = discord.channel_messages(cfg.main_channel_id)
-    assert any("Athena" in m and slug in m for m in main_msgs), main_msgs
+    assert any("Hermes" in m and slug in m for m in main_msgs), main_msgs
 
     # 4. A project category + general channel were created.
     assert rec.state.category_id is not None
@@ -48,7 +48,7 @@ async def test_happy_path_kickoff_to_completion(
     general_name = discord.channel_name(general_id)
     assert general_name and general_name.endswith("-general")
 
-    # 5. Prometheus drafted, Argus reviewed, Athena asked for approval.
+    # 5. Prometheus drafted, Argus reviewed, Hermes asked for approval.
     general_msgs = discord.channel_messages(general_id)
     joined = "\n---\n".join(general_msgs)
     assert "Prometheus" in joined
@@ -91,7 +91,7 @@ async def test_happy_path_kickoff_to_completion(
     assert "Atlas" not in fe and "Atlas" not in te
     assert "Hephaestus" not in fe and "Hephaestus" not in be
 
-    # 11. Athena announced specialist channel opening + completion in #general.
+    # 11. Hermes announced specialist channel opening + completion in #general.
     general_msgs = "\n".join(discord.channel_messages(general_id))
     assert "Specialist channels opened" in general_msgs
     assert "specialists report complete" in general_msgs

@@ -23,13 +23,13 @@ finishing `mythos/SETUP.md`. Estimated wall-clock: 15–30 minutes.
   double-click on a word, look it up in a built-in
   dictionary, show the translation.
   ```
-- [ ] Within 5s, **Athena** posts an acknowledgement in `#main` mentioning a
+- [ ] Within 5s, **Hermes** posts an acknowledgement in `#main` mentioning a
   project slug like `proj-translator-extension-YYYYMMDD-xxxxxx`.
 - [ ] A new Discord category appears in the sidebar named
   `mythos-<slug>`.
 - [ ] Inside that category, exactly **one** channel exists:
   `<slug>-general`.
-- [ ] **Athena** posted an opening message in `<slug>-general` repeating the
+- [ ] **Hermes** posted an opening message in `<slug>-general` repeating the
   user's request and announcing the handoff to Prometheus.
 
 ## Phase 2 — Spec drafting
@@ -45,7 +45,7 @@ finishing `mythos/SETUP.md`. Estimated wall-clock: 15–30 minutes.
 - [ ] **Argus** posts a review in `<slug>-general` after Prometheus, with a
   `## Verdict` line containing either `APPROVED` or `CHANGES_REQUESTED`,
   followed by a `## Comments` bullet list.
-- [ ] **Athena** posts a follow-up asking the user to approve or describe
+- [ ] **Hermes** posts a follow-up asking the user to approve or describe
   changes.
 
 ## Phase 4 — Approval round
@@ -54,25 +54,25 @@ Pick **one** of (a) approve straight through or (b) request changes first.
 
 ### 4a. Approve straight through
 - [ ] In `<slug>-general`, type `approve`.
-- [ ] **Athena** posts a confirmation that decomposition is starting.
+- [ ] **Hermes** posts a confirmation that decomposition is starting.
 
 ### 4b. Request changes
 - [ ] In `<slug>-general`, type a substantive change request (e.g.
   `the dictionary should be offline-only, and double-click should also
   work on selected text, not just words`).
-- [ ] **Athena** acknowledges the change request and pings Prometheus
+- [ ] **Hermes** acknowledges the change request and pings Prometheus
   again.
 - [ ] Within ~60s, **Prometheus** posts `spec-v2.md` and **Argus**
   re-reviews.
-- [ ] **Athena** asks for approval again. Reply `approve`.
+- [ ] **Hermes** asks for approval again. Reply `approve`.
 
 ## Phase 5 — Decomposition
 
-- [ ] **Athena** posts a decomposition with three sections:
+- [ ] **Hermes** posts a decomposition with three sections:
   `## Frontend (Apollo)`, `## Backend (Atlas)`, `## Test (Hephaestus)`.
 - [ ] Three new channels appear in the project category:
   `<slug>-frontend`, `<slug>-backend`, `<slug>-test`.
-- [ ] **Athena** confirms in `<slug>-general` that specialist channels
+- [ ] **Hermes** confirms in `<slug>-general` that specialist channels
   are open.
 
 ## Phase 6 — Specialist execution
@@ -99,7 +99,7 @@ channel only**. Confirm:
 
 ## Phase 8 — Project complete
 
-- [ ] **Athena** posts a final "All specialists report complete" message
+- [ ] **Hermes** posts a final "All specialists report complete" message
   in `<slug>-general`.
 - [ ] On disk, `state.json` in the project workspace shows `"phase":
   "complete"`.

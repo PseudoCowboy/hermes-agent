@@ -59,7 +59,7 @@ bot into a Discord server you control.
 ### 1d. Multi-bot mode (one Discord identity per role) — recommended
 
 By default Mythos can run with a single bot that posts on behalf of
-every role (Athena, Prometheus, Argus, Hephaestus, Apollo, Atlas) and
+every role (Hermes, Prometheus, Argus, Hephaestus, Apollo, Atlas) and
 distinguishes speakers via a `[Role · Title]` text prefix. For better
 UX in busy channels you can give each role its own Discord bot account
 so each speaker has its own username and avatar.
@@ -67,7 +67,7 @@ so each speaker has its own username and avatar.
 1. Repeat steps 1a–1b for each role you want to split out, naming the
    apps after the role (e.g. *Mythos · Prometheus*). Invite each bot
    into the same guild.
-2. **Athena's bot must have `Manage Channels`** — it is the only client
+2. **Hermes's bot must have `Manage Channels`** — it is the only client
    that creates project categories/channels and the only client that
    listens for inbound messages. The other bots only need `View
    Channels` + `Send Messages` + `Read Message History`.
@@ -75,7 +75,7 @@ so each speaker has its own username and avatar.
 
    ```bash
    export MYTHOS_BOT_TOKENS='{
-     "athena":     "MTQ...",
+     "hermes":     "MTQ...",
      "prometheus": "MTQ...",
      "argus":      "MTQ...",
      "hephaestus": "MTQ...",
@@ -84,9 +84,9 @@ so each speaker has its own username and avatar.
    }'
    ```
 
-   - Roles missing from the dict fall back to Athena's bot.
-   - If `"athena"` is omitted but the legacy `DISCORD_BOT_TOKEN` is set,
-     Athena uses the legacy token.
+   - Roles missing from the dict fall back to Hermes's bot.
+   - If `"hermes"` is omitted but the legacy `DISCORD_BOT_TOKEN` is set,
+     Hermes uses the legacy token.
    - When `MYTHOS_BOT_TOKENS` is unset, Mythos runs in single-bot mode
      (legacy behavior — `DISCORD_BOT_TOKEN` only).
 
@@ -103,7 +103,7 @@ Copy `mythos/.env.example` → `.env` and fill in real values.
 | `DISCORD_BOT_TOKEN`     | Bot token from the Discord Developer Portal. Required only in single-bot mode (see §1d). | `MTIz…` |
 | `DISCORD_GUILD_ID`      | Numeric Discord guild ID where Mythos operates.               | `1029384756`             |
 | `MYTHOS_MAIN_CHANNEL_ID`| Numeric ID of the channel users post intake messages in.      | `1029384800`             |
-| `ANTHROPIC_API_KEY`     | API key used by the Claude Code CLI underneath Athena/Prometheus/Atlas. *(Only required if your local proxy at 127.0.0.1:4141 demands it; the default config sends `dummy`.)* | `sk-ant-…` |
+| `ANTHROPIC_API_KEY`     | API key used by the Claude Code CLI underneath Hermes/Prometheus/Atlas. *(Only required if your local proxy at 127.0.0.1:4141 demands it; the default config sends `dummy`.)* | `sk-ant-…` |
 | `OPENAI_API_KEY`        | API key used by the Codex CLI underneath Argus/Hephaestus.    | `sk-…`                   |
 | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | API key the Gemini CLI uses for Apollo. The Gemini CLI also accepts pre-existing `~/.config/gcloud` credentials. | `AIza…` |
 
@@ -128,7 +128,7 @@ running `python -m mythos`:
 
 | Role(s)               | CLI       | Install                                          | Verify                              |
 |-----------------------|-----------|--------------------------------------------------|-------------------------------------|
-| Athena, Prometheus, Atlas | `claude`  | https://docs.anthropic.com/en/docs/claude-code | `claude --version`                  |
+| Hermes, Prometheus, Atlas | `claude`  | https://docs.anthropic.com/en/docs/claude-code | `claude --version`                  |
 | Argus, Hephaestus     | `codex`   | OpenAI Codex CLI install instructions          | `codex --version`                   |
 | Apollo                | `gemini`  | Google Gemini CLI install instructions         | `gemini --version`                  |
 
@@ -248,7 +248,7 @@ Per-project workspace layout under `MYTHOS_WORKSPACE_ROOT`:
     │   ├── spec-v1.md                 # Prometheus drafts
     │   └── spec-v2.md                 # subsequent revisions
     ├── logs/
-    │   ├── athena.log
+    │   ├── hermes.log
     │   ├── prometheus.log
     │   └── …
     └── state.json                     # Recovery-hint snapshot

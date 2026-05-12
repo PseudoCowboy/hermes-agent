@@ -10,7 +10,7 @@ workspace_root: "~/mythos/projects"
 # when many projects run in parallel.
 max_concurrent_specialists: 6
 
-# How many spec-revision rounds before Athena escalates to the user.
+# How many spec-revision rounds before Hermes escalates to the user.
 max_approval_rounds: 2
 
 # Per-CLI invocation timeout. Increase for slow local models.

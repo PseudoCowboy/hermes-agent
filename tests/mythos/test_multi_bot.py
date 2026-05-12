@@ -15,7 +15,7 @@ from mythos.roles import Role
 
 def test_parse_bot_tokens_dict():
     raw = json.dumps({
-        "athena": "tok-A",
+        "hermes": "tok-A",
         "prometheus": "tok-P",
         "argus": "tok-R",
         "unknown_role": "ignored",
@@ -23,16 +23,16 @@ def test_parse_bot_tokens_dict():
     })
     out = _parse_bot_tokens(raw, fallback_token="")
     assert out == {
-        Role.ATHENA: "tok-A",
+        Role.HERMES: "tok-A",
         Role.PROMETHEUS: "tok-P",
         Role.ARGUS: "tok-R",
     }
 
 
-def test_parse_bot_tokens_falls_back_to_legacy_for_athena():
+def test_parse_bot_tokens_falls_back_to_legacy_for_hermes():
     raw = json.dumps({"prometheus": "tok-P"})
     out = _parse_bot_tokens(raw, fallback_token="legacy-token")
-    assert out[Role.ATHENA] == "legacy-token"
+    assert out[Role.HERMES] == "legacy-token"
     assert out[Role.PROMETHEUS] == "tok-P"
 
 
@@ -47,12 +47,12 @@ def test_load_config_reads_multibot_env(tmp_path):
         "DISCORD_GUILD_ID": "1",
         "MYTHOS_MAIN_CHANNEL_ID": "2",
         "MYTHOS_BOT_TOKENS": json.dumps(
-            {"athena": "A", "prometheus": "P"}
+            {"hermes": "A", "prometheus": "P"}
         ),
     }
     with mock.patch.dict(os.environ, env, clear=False):
         cfg = load_config(path=tmp_path / "missing.yaml")
-    assert cfg.bot_tokens == {Role.ATHENA: "A", Role.PROMETHEUS: "P"}
+    assert cfg.bot_tokens == {Role.HERMES: "A", Role.PROMETHEUS: "P"}
 
 
 def test_load_config_no_multibot_env_leaves_bot_tokens_empty(tmp_path):
@@ -67,7 +67,7 @@ def test_load_config_no_multibot_env_leaves_bot_tokens_empty(tmp_path):
     assert cfg.discord_token == "legacy"
 
 
-def test_multibot_io_requires_athena():
+def test_multibot_io_requires_hermes():
     with pytest.raises(ValueError):
         MultiBotDiscordIO(tokens={Role.PROMETHEUS: "p"})
 
@@ -108,40 +108,40 @@ async def test_multibot_io_routes_by_role(monkeypatch):
     monkeypatch.setattr(dio, "RealDiscordIO", _StubClient)
 
     io = dio.MultiBotDiscordIO(tokens={
-        Role.ATHENA: "A",
+        Role.HERMES: "A",
         Role.PROMETHEUS: "P",
         Role.ARGUS: "R",
     })
 
     await io.send(123, "hello from prometheus", role=Role.PROMETHEUS)
-    await io.send(123, "hello from athena", role=Role.ATHENA)
-    # Apollo has no token; should route to Athena.
+    await io.send(123, "hello from hermes", role=Role.HERMES)
+    # Apollo has no token; should route to Hermes.
     await io.send(123, "fallback", role=Role.APOLLO)
-    # Role omitted entirely also routes to Athena.
+    # Role omitted entirely also routes to Hermes.
     await io.send(123, "no role", role=None)
 
     p_client = io._clients[Role.PROMETHEUS]
-    a_client = io._clients[Role.ATHENA]
+    a_client = io._clients[Role.HERMES]
     r_client = io._clients[Role.ARGUS]
 
     assert [s[1] for s in p_client.sends] == ["hello from prometheus"]
     assert [s[1] for s in a_client.sends] == [
-        "hello from athena", "fallback", "no role"
+        "hello from hermes", "fallback", "no role"
     ]
     assert r_client.sends == []
     assert io.uses_role_identity is True
 
 
 @pytest.mark.asyncio
-async def test_multibot_io_only_athena_listens(monkeypatch):
+async def test_multibot_io_only_hermes_listens(monkeypatch):
     from mythos import discord_io as dio
     monkeypatch.setattr(dio, "RealDiscordIO", _StubClient)
 
     io = dio.MultiBotDiscordIO(tokens={
-        Role.ATHENA: "A",
+        Role.HERMES: "A",
         Role.PROMETHEUS: "P",
     })
-    assert io._clients[Role.ATHENA].listen is True
+    assert io._clients[Role.HERMES].listen is True
     assert io._clients[Role.PROMETHEUS].listen is False
 
     handler_called = []
@@ -150,7 +150,7 @@ async def test_multibot_io_only_athena_listens(monkeypatch):
         handler_called.append(msg)
 
     io.on_message(handler)
-    assert io._clients[Role.ATHENA].handler is handler
+    assert io._clients[Role.HERMES].handler is handler
     assert io._clients[Role.PROMETHEUS].handler is None
 
 

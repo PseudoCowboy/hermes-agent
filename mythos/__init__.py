@@ -1,6 +1,6 @@
 """Mythos: Discord-native multi-agent development orchestrator.
 
-A roster of mythologically-named agents (Athena, Prometheus, Argus,
+A roster of mythologically-named agents (Hermes, Prometheus, Argus,
 Hephaestus, Apollo, Atlas) take a user's idea typed into a Discord
 channel and turn it into a reviewed spec plus a parallel, decomposed
 implementation across role-specific child channels — each agent backed

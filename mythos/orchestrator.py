@@ -138,14 +138,14 @@ class MythosOrchestrator:
 
         await self._post(
             self.config.main_channel_id,
-            Role.ATHENA,
-            P.athena_intake_ack(intake, slug),
+            Role.HERMES,
+            P.hermes_intake_ack(intake, slug),
         )
         # Announce inside the project channel and kick the spec loop.
         general_id = rec.state.channels[GENERAL_CHANNEL]
         await self._post(
             general_id,
-            Role.ATHENA,
+            Role.HERMES,
             f"New project `{slug}` opened. Pinging Prometheus to draft a spec.\n\n"
             f"User request:\n> {intake}",
         )
@@ -169,7 +169,7 @@ class MythosOrchestrator:
                 self.pm.update_phase(rec.state.slug, ProjectPhase.DECOMPOSING)
                 await self._post(
                     rec.state.channels[GENERAL_CHANNEL],
-                    Role.ATHENA,
+                    Role.HERMES,
                     "Approval received. Decomposing the spec and opening "
                     "frontend / backend / test channels.",
                 )
@@ -180,7 +180,7 @@ class MythosOrchestrator:
                     self.pm.update_phase(rec.state.slug, ProjectPhase.ESCALATED)
                     await self._post(
                         rec.state.channels[GENERAL_CHANNEL],
-                        Role.ATHENA,
+                        Role.HERMES,
                         "The spec has been through "
                         f"{rec.state.approval_round} change rounds — "
                         "what would you like to do? Reply 'approve' to "
@@ -190,7 +190,7 @@ class MythosOrchestrator:
                 rec.state.approval_round += 1
                 await self._post(
                     rec.state.channels[GENERAL_CHANNEL],
-                    Role.ATHENA,
+                    Role.HERMES,
                     "Forwarding your change request to Prometheus for revision "
                     f"(round {rec.state.approval_round}).",
                 )
@@ -234,7 +234,7 @@ class MythosOrchestrator:
         self.pm.update_phase(slug, ProjectPhase.REVIEWING)
         await self._post(
             general_id,
-            Role.ATHENA,
+            Role.HERMES,
             "Pinging Argus to review the draft.",
         )
         review = await self.sup.invoke(
@@ -253,11 +253,11 @@ class MythosOrchestrator:
         rec.state.last_review_text = review.text
         await self._post_long(general_id, Role.ARGUS, review.text)
 
-        # Hand back to Athena/user for approval.
+        # Hand back to Hermes/user for approval.
         self.pm.update_phase(slug, ProjectPhase.AWAITING_USER)
         await self._post(
             general_id,
-            Role.ATHENA,
+            Role.HERMES,
             f"Argus says **{verdict.upper()}**. Reply `approve` to proceed, "
             f"or describe what you want changed and I'll send Prometheus back "
             f"for another round.",
@@ -274,27 +274,27 @@ class MythosOrchestrator:
 
         result = await self.sup.invoke(
             slug,
-            Role.ATHENA,
+            Role.HERMES,
             AgentInput(
-                prompt=P.athena_decompose(spec),
+                prompt=P.hermes_decompose(spec),
                 workdir=rec.workspace.root,
             ),
         )
         if not result.ok:
-            await self._post_error(general_id, Role.ATHENA, result)
+            await self._post_error(general_id, Role.HERMES, result)
             return
 
         items = _parse_decomposition(result.text)
         await self._post_long(
             general_id,
-            Role.ATHENA,
+            Role.HERMES,
             "Decomposition:\n\n" + result.text,
         )
 
         await self.pm.open_specialist_channels(slug)
         await self._post(
             general_id,
-            Role.ATHENA,
+            Role.HERMES,
             "Specialist channels opened — Apollo, Atlas, and Hephaestus are picking up their work.",
         )
 
@@ -324,7 +324,7 @@ class MythosOrchestrator:
         self.pm.update_phase(slug, ProjectPhase.COMPLETE)
         await self._post(
             general_id,
-            Role.ATHENA,
+            Role.HERMES,
             "All specialists report complete. Project is implemented.",
         )
 

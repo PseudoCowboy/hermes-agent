@@ -45,7 +45,7 @@ class Workspace:
             return self.root / "backend"
         if role == Role.HEPHAESTUS:
             return self.root / "tests"
-        # Athena, Prometheus, Argus all operate on the project root
+        # Hermes, Prometheus, Argus all operate on the project root
         return self.root
 
     # --- Spec management ---

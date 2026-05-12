@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 class Role(str, Enum):
     """The six roles in a Mythos project. Names are mythological."""
 
-    ATHENA = "athena"           # Main / orchestrator
+    HERMES = "hermes"           # Main / orchestrator
     PROMETHEUS = "prometheus"   # Draft plan
     ARGUS = "argus"             # Review
     HEPHAESTUS = "hephaestus"   # Test
@@ -113,7 +113,7 @@ def _gemini_binding(role: Role) -> RoleBinding:
 
 # Default role → CLI binding map. Override via MythosConfig.
 ROLE_BINDINGS: Dict[Role, RoleBinding] = {
-    Role.ATHENA: _claude_code_binding(Role.ATHENA),
+    Role.HERMES: _claude_code_binding(Role.HERMES),
     Role.PROMETHEUS: _claude_code_binding(Role.PROMETHEUS),
     Role.ATLAS: _claude_code_binding(Role.ATLAS),
     Role.ARGUS: _codex_binding(Role.ARGUS),
@@ -124,7 +124,7 @@ ROLE_BINDINGS: Dict[Role, RoleBinding] = {
 
 # Mention/role tags posted with each agent message so users see who's talking.
 ROLE_TAG: Dict[Role, str] = {
-    Role.ATHENA: "[Athena · Main]",
+    Role.HERMES: "[Hermes · Main]",
     Role.PROMETHEUS: "[Prometheus · Draft Plan]",
     Role.ARGUS: "[Argus · Review]",
     Role.HEPHAESTUS: "[Hephaestus · Test]",

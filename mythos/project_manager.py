@@ -106,9 +106,9 @@ class ProjectManager:
 
             state.category_id = cat_id
             state.channels[GENERAL_CHANNEL] = general_id
-            # The general channel is where Athena and Prometheus operate;
-            # bind it to Athena (the orchestrator) for routing decisions.
-            state.channel_role[general_id] = Role.ATHENA
+            # The general channel is where Hermes and Prometheus operate;
+            # bind it to Hermes (the orchestrator) for routing decisions.
+            state.channel_role[general_id] = Role.HERMES
 
             rec = ProjectRecord(state=state, workspace=workspace)
             self._projects[slug] = rec

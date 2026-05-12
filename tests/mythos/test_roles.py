@@ -20,7 +20,7 @@ def test_default_bindings_cover_every_role():
 
 
 def test_claude_code_agents_default_command_and_env():
-    for role in (Role.ATHENA, Role.PROMETHEUS, Role.ATLAS):
+    for role in (Role.HERMES, Role.PROMETHEUS, Role.ATLAS):
         b = ROLE_BINDINGS[role]
         assert b.backend == Backend.CLAUDE_CODE
         assert b.command[0] == "claude"
@@ -67,7 +67,7 @@ def test_env_override_claude_model(monkeypatch):
     monkeypatch.setenv("MYTHOS_CLAUDE_MODEL", "some-other-model")
     monkeypatch.setenv("MYTHOS_CLAUDE_BASE_URL", "http://other:9999")
     bindings = apply_env_overrides(dict(ROLE_BINDINGS))
-    b = bindings[Role.ATHENA]
+    b = bindings[Role.HERMES]
     assert b.env["ANTHROPIC_MODEL"] == "some-other-model"
     assert b.env["ANTHROPIC_BASE_URL"] == "http://other:9999"
 

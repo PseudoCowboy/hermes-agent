@@ -90,11 +90,11 @@ def argus_review(spec_text: str) -> str:
     )
 
 
-def athena_decompose(spec_text: str) -> str:
-    """Prompt Athena to decompose an approved spec into role work-items."""
+def hermes_decompose(spec_text: str) -> str:
+    """Prompt Hermes to decompose an approved spec into role work-items."""
     return "\n".join(
         [
-            "You are ATHENA, the Main Agent in the Mythos multi-agent system.",
+            "You are HERMES, the Main Agent in the Mythos multi-agent system.",
             "The spec below has been approved by the user. Decompose the work",
             "into three role-specific work-items, one each for FRONTEND",
             "(Apollo), BACKEND (Atlas), and TEST (Hephaestus).",
@@ -146,8 +146,8 @@ def specialist_implement(role: Role, spec_text: str, work_item: str) -> str:
     )
 
 
-def athena_intake_ack(intake_text: str, slug: str) -> str:
-    """Quick ack message Athena posts in #main."""
+def hermes_intake_ack(intake_text: str, slug: str) -> str:
+    """Quick ack message Hermes posts in #main."""
     return (
         f"Got your idea — spinning up project `{slug}`. "
         f"I'll create a dedicated channel and hand it to Prometheus to draft a spec."

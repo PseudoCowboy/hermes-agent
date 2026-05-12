@@ -16,11 +16,11 @@ from mythos.roles import Role
 
 
 class ProjectPhase(str, Enum):
-    INTAKE = "intake"             # Athena just received the request
+    INTAKE = "intake"             # Hermes just received the request
     DRAFTING = "drafting"         # Prometheus is writing the spec
     REVIEWING = "reviewing"       # Argus is reviewing
     AWAITING_USER = "awaiting_user"  # User must approve / request changes
-    DECOMPOSING = "decomposing"   # Athena is creating child channels + work items
+    DECOMPOSING = "decomposing"   # Hermes is creating child channels + work items
     IMPLEMENTING = "implementing" # Specialists are running
     COMPLETE = "complete"
     ESCALATED = "escalated"       # >max approval rounds with no convergence
