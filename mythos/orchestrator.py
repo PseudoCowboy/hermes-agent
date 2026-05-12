@@ -25,6 +25,7 @@ from mythos.project_manager import (
     TEST_CHANNEL,
     ProjectManager,
     ProjectRecord,
+    short_id_for,
 )
 from mythos import prompts as P
 from mythos.roles import Role
@@ -135,12 +136,29 @@ class MythosOrchestrator:
             return
         rec = await self.pm.create_project(intake_text=intake, user_id=msg.user_id)
         slug = rec.state.slug
+        sid = short_id_for(slug)
 
         await self._post(
             self.config.main_channel_id,
             Role.HERMES,
             P.hermes_intake_ack(intake, slug),
         )
+        # Post a project-card to the projects index channel, if configured.
+        if self.config.projects_channel_id:
+            from datetime import datetime
+            ts = datetime.fromtimestamp(rec.state.created_at).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            card = (
+                f"🆕 **New project `{sid}`**\n"
+                f"• Name: `{slug}`\n"
+                f"• Created: {ts}\n"
+                f"• Workspace: `{rec.workspace.root}`\n"
+                f"• Goals:\n> {intake.strip().splitlines()[0][:300]}"
+            )
+            await self._post(
+                self.config.projects_channel_id, Role.HERMES, card
+            )
         # Announce inside the project channel and kick the spec loop.
         general_id = rec.state.channels[GENERAL_CHANNEL]
         await self._post(
@@ -338,17 +356,23 @@ class MythosOrchestrator:
     ) -> None:
         slug = rec.state.slug
         ch_id = rec.state.channels[channel_slot]
+        workdir = rec.workspace.role_dir(role)
+        # Surface the actual task (first ~6 lines of the work-item) so each
+        # specialist channel announces *what* it's about to do, not just that
+        # something is starting.
+        task_preview = _summarize_work_item(work_item)
         await self._post(
             ch_id,
             role,
-            f"Picked up the work-item. Working in `{rec.workspace.role_dir(role)}`.",
+            f"📋 Picked up my work-item:\n{task_preview}\n\n"
+            f"Working in `{workdir}`. I'll post my implementation here when done.",
         )
         result = await self.sup.invoke(
             slug,
             role,
             AgentInput(
                 prompt=P.specialist_implement(role, spec, work_item),
-                workdir=rec.workspace.role_dir(role),
+                workdir=workdir,
             ),
         )
         if not result.ok:
@@ -357,11 +381,28 @@ class MythosOrchestrator:
         await self._post_long(ch_id, role, result.text)
         # Question-in-own-channel discipline: detect QUESTION: lines and
         # re-post them as a clear ping in *this* channel only.
-        for q in _QUESTION_RE.findall(result.text):
+        questions = _QUESTION_RE.findall(result.text)
+        for q in questions:
             await self._post(
                 ch_id,
                 role,
                 f"❓ I need a clarification before I can finish: {q}",
+            )
+        # Explicit completion announcement so users (and Hermes-watchers) can
+        # see at a glance that the specialist has finished. If there are open
+        # questions, mark as blocked instead of complete.
+        files_summary = _list_workdir_files(workdir)
+        if questions:
+            await self._post(
+                ch_id,
+                role,
+                f"⏸️  Paused — waiting on {len(questions)} clarification(s) above before I can mark this complete.",
+            )
+        else:
+            await self._post(
+                ch_id,
+                role,
+                f"✅ Implementation complete.{files_summary}",
             )
 
     async def _handle_specialist_channel(
@@ -461,3 +502,38 @@ def _parse_decomposition(text: str) -> _DecomposedItems:
         backend=sections.get("backend"),
         test=sections.get("test"),
     )
+
+
+def _summarize_work_item(text: str, max_lines: int = 6, max_chars: int = 500) -> str:
+    """Trim a decomposition section down to a short blockquote preview."""
+    if not text:
+        return "> (no work-item provided)"
+    lines = [ln.rstrip() for ln in text.strip().splitlines() if ln.strip()]
+    head = lines[:max_lines]
+    body = "\n".join(f"> {ln}" for ln in head)
+    if len(lines) > max_lines or len(body) > max_chars:
+        body = body[:max_chars].rstrip() + "\n> …"
+    return body
+
+
+def _list_workdir_files(workdir) -> str:
+    """List files written into the role's working directory, for the done msg.
+
+    Returns either an empty string (nothing or unreadable) or a leading-newline
+    block listing up to 20 files. Best-effort — failures are swallowed because
+    the completion message must always post.
+    """
+    try:
+        from pathlib import Path
+        root = Path(workdir)
+        if not root.exists():
+            return ""
+        files = sorted(p.relative_to(root) for p in root.rglob("*") if p.is_file())
+        if not files:
+            return ""
+        shown = files[:20]
+        more = "" if len(files) <= 20 else f"\n…and {len(files) - 20} more"
+        listing = "\n".join(f"  • `{p}`" for p in shown)
+        return f"\nFiles produced ({len(files)}):\n{listing}{more}"
+    except Exception:
+        return ""

@@ -33,6 +33,17 @@ BACKEND_CHANNEL = "backend"
 TEST_CHANNEL = "test"
 
 
+def short_id_for(slug: str) -> str:
+    """Return the 4-char public id used in category + channel names.
+
+    Derived from the trailing 6-hex digest of ``slug`` (see ``make_slug``);
+    this keeps the short id stable and uniqueness-correlated with the slug
+    without re-rolling.
+    """
+    tail = slug.rsplit("-", 1)[-1]
+    return (tail or slug)[:4]
+
+
 @dataclass
 class ProjectRecord:
     """A project = state + filesystem workspace."""
@@ -94,14 +105,15 @@ class ProjectManager:
             )
 
             # Create Discord category + general channel.
-            category_name = f"{self.config.category_prefix}-{slug}"
+            sid = short_id_for(slug)
+            category_name = f"{self.config.category_prefix}-{sid}"
             cat_id = await self.discord.create_category(
                 self.config.discord_guild_id, category_name
             )
             general_id = await self.discord.create_text_channel(
                 self.config.discord_guild_id,
                 cat_id,
-                f"{slug}-{self.config.general_suffix}",
+                f"{sid}-{self.config.general_suffix}",
             )
 
             state.category_id = cat_id
@@ -130,13 +142,14 @@ class ProjectManager:
             (BACKEND_CHANNEL, self.config.backend_suffix, Role.ATLAS),
             (TEST_CHANNEL, self.config.test_suffix, Role.HEPHAESTUS),
         ]
+        sid = short_id_for(slug)
         for slot, suffix, role in bindings:
             if slot in state.channels:
                 continue
             ch_id = await self.discord.create_text_channel(
                 self.config.discord_guild_id,
                 state.category_id,
-                f"{slug}-{suffix}",
+                f"{sid}-{suffix}",
             )
             state.channels[slot] = ch_id
             state.channel_role[ch_id] = role

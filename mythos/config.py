@@ -19,6 +19,7 @@ from mythos.roles import ROLE_BINDINGS, Role, RoleBinding, apply_env_overrides, 
 
 DEFAULT_WORKSPACE_ROOT = Path.home() / "mythos" / "projects"
 DEFAULT_MAIN_CHANNEL_ENV = "MYTHOS_MAIN_CHANNEL_ID"
+DEFAULT_PROJECTS_CHANNEL_ENV = "MYTHOS_PROJECTS_CHANNEL_ID"
 DEFAULT_GUILD_ENV = "DISCORD_GUILD_ID"
 DEFAULT_TOKEN_ENV = "DISCORD_BOT_TOKEN"
 BOT_TOKENS_ENV = "MYTHOS_BOT_TOKENS"
@@ -35,6 +36,9 @@ class MythosConfig:
     discord_token: str = ""
     discord_guild_id: int = 0
     main_channel_id: int = 0
+    # Index channel where Hermes posts a one-line card per new project
+    # (slug, short id, time, workspace path, intake goals).
+    projects_channel_id: int = 0
 
     # Per-role Discord bot tokens. When non-empty, MythosOrchestrator
     # uses MultiBotDiscordIO so each role posts under its own identity.
@@ -100,6 +104,11 @@ def load_config(path: Optional[Path] = None) -> MythosConfig:
     if v := os.getenv(DEFAULT_MAIN_CHANNEL_ENV):
         try:
             cfg.main_channel_id = int(v)
+        except ValueError:
+            pass
+    if v := os.getenv(DEFAULT_PROJECTS_CHANNEL_ENV):
+        try:
+            cfg.projects_channel_id = int(v)
         except ValueError:
             pass
     if v := os.getenv("MYTHOS_WORKSPACE_ROOT"):

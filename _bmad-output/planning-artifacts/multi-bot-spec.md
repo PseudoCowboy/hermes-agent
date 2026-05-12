@@ -119,3 +119,22 @@ to `DISCORD_BOT_TOKEN` if `"hermes"` is absent from the JSON).
 - Distinct per-role permissions in Discord (operator concern; document only).
 - Web-based bot management UI.
 - Migrating channel ownership between bots.
+
+---
+
+# Addendum — Projects Index Channel + Short-Name Categories (2026-05-12)
+
+**Status:** Implemented in same code base.
+
+## Motivation
+Long auto-generated slugs (e.g. `mythos-proj-chrome-extension-manifest-v3-20260512-263f02`) made the Discord sidebar unreadable, and there was no single place to scan all active projects. Replace with a 4-char short id and add a dedicated index channel.
+
+## Changes
+- **New env var `MYTHOS_PROJECTS_CHANNEL_ID`** — operator-provisioned text channel where Hermes posts a one-line card per new project (slug, 4-char id, created time, workspace path, intake goal).
+- **`mythos/config.py`** — added `projects_channel_id: int` parsed from the env var.
+- **`mythos/project_manager.py`** — added `short_id_for(slug)` (first 4 chars of the slug's 6-hex tail). Category renamed from `mythos-<slug>` to `mythos-<XXXX>`. Channels renamed from `<slug>-{general,frontend,backend,test}` to `<XXXX>-{general,frontend,backend,test}`.
+- **`mythos/orchestrator.py`** — `_handle_main` now also posts the project card to `projects_channel_id` when configured. Falls back silently when the env var is unset (single-channel legacy behaviour preserved for tests).
+- Legacy long-name behaviour is **removed**, not toggleable. In-flight projects from before the change are cleaned up out-of-band.
+
+## Tests
+Existing `tests/mythos/` suite unaffected (in-memory IO records the synthesized names; no test asserted on the long form). Smoke-tested live on the dict-pop Chrome MV3 scenario after deploy.
