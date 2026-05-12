@@ -40,6 +40,7 @@ from gateway.personas import (
     load_persona_system_prompt,
     role_to_persona,
 )
+from gateway.discord_roles import normalize_discord_role
 from hermes_cli.runstate import write_stream_runstate
 from tools.registry import (
     ToolDispatchContext,
@@ -323,6 +324,9 @@ async def implementer_worker(
             loop=_gateway_loop,
             adapter=adapter,
             runner=runner,
+            discord_bot_role=normalize_discord_role(
+                getattr(session, "discord_bot_role", None) or session.role
+            ),
         )
 
     while True:

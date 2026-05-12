@@ -8,7 +8,8 @@ gets edited in place as streams move from ``pending`` → ``working`` →
   map to a multi-line markdown body.
 - :func:`update_stream_status` — merge a single stream's new status
   into the project runstate (RMW under the existing per-project lock),
-  recompute the body, and edit the pinned Discord message in place.
+  recompute the body, edit the pinned Discord message in place, and
+  announce project completion once all streams pass review.
 
 Both are best-effort: status is observability, not control flow. Any
 failure (Discord API hiccup, missing rollup_message_id, bot offline)
@@ -76,6 +77,27 @@ def format_rollup_message(slug: str, stream_status: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_completion_message(slug: str, stream_status: Mapping[str, Any]) -> str:
+    """Compose the final main-channel completion announcement."""
+    lines = [f"✅ `{slug}` complete", "All streams have passed review:"]
+    for name, entry in stream_status.items():
+        entry = entry or {}
+        role = entry.get("role")
+        role_part = f" ({role})" if role else ""
+        lines.append(f"• `{name}`{role_part}")
+    return "\n".join(lines)
+
+
+def _all_streams_complete(stream_status: Mapping[str, Any]) -> bool:
+    """Return True only when there is at least one stream and all are complete."""
+    if not stream_status:
+        return False
+    return all(
+        (entry or {}).get("status") == "complete"
+        for entry in stream_status.values()
+    )
+
+
 def _find_orchestrator_session(runner: Any, scope_id: str, slug: str) -> Optional[Any]:
     """Walk the SessionRouter for the orchestrator's project session.
 
@@ -113,7 +135,7 @@ async def update_stream_status(
 ) -> bool:
     """Merge a stream-status transition into the runstate + edit the rollup.
 
-    Returns True when the Discord edit was attempted, False otherwise.
+    Returns True when the Discord rollup edit succeeds, False otherwise.
     All failures are logged + swallowed; the auto-emit hook calls this
     fire-and-forget and must never see an exception bubble up.
 
@@ -147,6 +169,8 @@ async def update_stream_status(
     rollup_message_id = None
     main_channel_id = None
     body = None
+    completion_body = None
+    should_send_completion = False
     stream_status: Dict[str, Any] = {}
 
     with _project_lock(slug, scope_id):
@@ -208,6 +232,16 @@ async def update_stream_status(
             current["scope_id"] = scope_id or ""
             current["slug"] = slug
             current["stream_status"] = stream_status
+            if _all_streams_complete(stream_status):
+                current["phase"] = "done"
+                if adapter and main_channel_id and not (
+                    current.get("completion_message_id")
+                    or current.get("completion_announced_at")
+                    or current.get("completion_announcement_inflight_at")
+                ):
+                    current["completion_announcement_inflight_at"] = _now_iso()
+                    current.pop("completion_announcement_error", None)
+                    should_send_completion = True
             current["updated_at"] = _now_iso()
             _atomic_write_text(path, _json_text(current))
         except Exception:
@@ -219,35 +253,89 @@ async def update_stream_status(
         # Compute the body inside the lock so the rendered text matches
         # the freshly written disk snapshot.
         body = format_rollup_message(slug, stream_status)
+        if should_send_completion:
+            completion_body = format_completion_message(slug, stream_status)
 
     # 3) Edit the pinned rollup message OUTSIDE the lock so a slow
     # Discord call doesn't block sibling status writes.
-    if not adapter or not rollup_message_id or not main_channel_id:
+    if not adapter or not main_channel_id:
         logger.debug(
             "update_stream_status: skip edit (adapter=%s rollup=%s chan=%s)",
             bool(adapter), bool(rollup_message_id), bool(main_channel_id),
         )
         return False
 
-    try:
-        edit_result = await adapter.edit_message(
-            main_channel_id, rollup_message_id, body,
-        )
-        # Codex review (Suggestion): respect SendResult.success rather
-        # than treating "no exception" as success.
-        ok = getattr(edit_result, "success", True)
-        if ok is False:
-            logger.warning(
-                "update_stream_status: edit_message returned success=False "
-                "for %s/%s msg=%s err=%s",
-                scope_id, slug, rollup_message_id,
-                getattr(edit_result, "error", None),
+    edited = False
+    if rollup_message_id:
+        try:
+            edit_result = await adapter.edit_message(
+                main_channel_id, rollup_message_id, body,
             )
-            return False
-        return True
-    except Exception:
-        logger.warning(
-            "update_stream_status: edit_message failed for %s/%s msg=%s",
-            scope_id, slug, rollup_message_id, exc_info=True,
+            # Codex review (Suggestion): respect SendResult.success rather
+            # than treating "no exception" as success.
+            ok = getattr(edit_result, "success", True)
+            if ok is False:
+                logger.warning(
+                    "update_stream_status: edit_message returned success=False "
+                    "for %s/%s msg=%s err=%s",
+                    scope_id, slug, rollup_message_id,
+                    getattr(edit_result, "error", None),
+                )
+            else:
+                edited = True
+        except Exception:
+            logger.warning(
+                "update_stream_status: edit_message failed for %s/%s msg=%s",
+                scope_id, slug, rollup_message_id, exc_info=True,
+            )
+    else:
+        logger.debug(
+            "update_stream_status: no rollup_message_id for %s/%s; skipping edit",
+            scope_id, slug,
         )
-        return False
+
+    if should_send_completion and completion_body:
+        send_result = None
+        try:
+            send_for_role = getattr(adapter, "send_for_role", None)
+            if callable(send_for_role):
+                send_result = await send_for_role(
+                    "orchestrator", main_channel_id, completion_body,
+                )
+            else:
+                send_result = await adapter.send(main_channel_id, completion_body)
+        except Exception as exc:
+            logger.warning(
+                "update_stream_status: completion announcement failed for %s/%s",
+                scope_id, slug, exc_info=True,
+            )
+            send_result = exc
+
+        completion_ok = getattr(send_result, "success", False) is True
+        completion_message_id = getattr(send_result, "message_id", None)
+        completion_error = getattr(send_result, "error", None) or str(send_result)
+
+        try:
+            with _project_lock(slug, scope_id):
+                path = _runstate_path_project(scope_id, slug)
+                current = _read_existing(path) or _project_skeleton(scope_id, slug)
+                current["scope_id"] = scope_id or ""
+                current["slug"] = slug
+                current["phase"] = "done"
+                current.pop("completion_announcement_inflight_at", None)
+                if completion_ok:
+                    current["completion_announced_at"] = _now_iso()
+                    if completion_message_id is not None:
+                        current["completion_message_id"] = str(completion_message_id)
+                    current.pop("completion_announcement_error", None)
+                else:
+                    current["completion_announcement_error"] = completion_error
+                current["updated_at"] = _now_iso()
+                _atomic_write_text(path, _json_text(current))
+        except Exception:
+            logger.warning(
+                "update_stream_status: completion runstate write failed for %s/%s",
+                scope_id, slug, exc_info=True,
+            )
+
+    return edited

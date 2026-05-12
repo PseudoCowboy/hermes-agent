@@ -39,6 +39,7 @@ import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from gateway.personas import ORCHESTRATOR, load_persona_system_prompt
+from gateway.discord_roles import normalize_discord_role
 from tools.registry import ToolDispatchContext, use_dispatch_context
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle protection
@@ -461,6 +462,9 @@ async def session_agent_worker(
             loop=_gateway_loop,
             adapter=adapter,
             runner=runner,
+            discord_bot_role=normalize_discord_role(
+                getattr(session, "discord_bot_role", None) or persona
+            ),
         )
 
     while True:

@@ -308,6 +308,7 @@ async def bootstrap_new_project(
             bot_user_id=getattr(adapter, "bot_user_id", None),
         )
         session.persona = ORCHESTRATOR
+        session.discord_bot_role = "orchestrator"
         session.slug = slug
         session.main_channel_id = main_channel_id
         runner._session_router.register(session_key, session)

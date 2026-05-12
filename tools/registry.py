@@ -90,6 +90,10 @@ class ToolDispatchContext:
     # ``runner._session_router._sessions`` without importing the gateway.
     # Optional; the hook silently skips status-rollup updates when None.
     runner: Optional[Any] = field(default=None, compare=False)
+    # Discord role identity for outbound agent-authored messages.  The
+    # primary Discord adapter remains the inbound/admin owner; this value
+    # selects an optional send-only role bot for visible agent speech.
+    discord_bot_role: Optional[str] = None
 
 
 # Tool-arg keys that auto-bind from context when the arg is missing or
@@ -393,9 +397,13 @@ def _maybe_emit_tool_progress(
         with _progress_emit_scope():
             try:
                 import asyncio as _asyncio
-                _asyncio.run_coroutine_threadsafe(
-                    adapter.send(channel_id, line), loop,
-                )
+                role = getattr(ctx, "discord_bot_role", None)
+                send_for_role = getattr(adapter, "send_for_role", None)
+                if role and callable(send_for_role):
+                    coro = send_for_role(role, channel_id, line)
+                else:
+                    coro = adapter.send(channel_id, line)
+                _asyncio.run_coroutine_threadsafe(coro, loop)
             except Exception:
                 logger.debug(
                     "auto-emit send failed for tool=%s ch=%s", name, channel_id,

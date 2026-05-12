@@ -46,6 +46,7 @@ ALL_PERSONAS = (
 _ROLE_TO_PERSONA = {
     "frontend": IMPLEMENTER_FRONTEND,
     "backend": IMPLEMENTER_BACKEND,
+    "test": TEST_AGENT,
 }
 
 
@@ -81,7 +82,7 @@ PERSONA_PROMPT_PATHS: Dict[str, str] = {
     ORCHESTRATOR: "prompts/orchestrator.md",
     IMPLEMENTER_FRONTEND: "prompts/implementer_frontend.md",  # P7a-2
     IMPLEMENTER_BACKEND: "prompts/implementer_backend.md",    # P7a-2
-    # TEST_AGENT: "prompts/test_agent.md",    # P7b
+    TEST_AGENT: "prompts/test_agent.md",
 }
 
 

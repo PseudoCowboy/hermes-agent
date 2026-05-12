@@ -4,6 +4,7 @@ import os
 from unittest.mock import patch
 
 from gateway.config import (
+    DiscordRoleBotConfig,
     GatewayConfig,
     HomeChannel,
     Platform,
@@ -51,6 +52,27 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict(d)
         assert restored.enabled is False
         assert restored.token is None
+
+    def test_role_bots_roundtrip_and_alias_normalization(self):
+        pc = PlatformConfig(
+            enabled=True,
+            token="primary",
+            role_bots={
+                "apollo": DiscordRoleBotConfig(token="front-token"),
+                "atlas": DiscordRoleBotConfig(token_env="ATLAS_TOKEN"),
+            },
+        )
+        restored = PlatformConfig.from_dict(pc.to_dict())
+
+        assert set(restored.role_bots) == {"frontend", "backend"}
+        assert restored.role_bots["frontend"].token == "front-token"
+        assert restored.role_bots["backend"].token_env == "ATLAS_TOKEN"
+
+    def test_role_bot_resolves_token_env(self, monkeypatch):
+        monkeypatch.setenv("APOLLO_TOKEN", "front-env-token")
+        cfg = DiscordRoleBotConfig(token_env="APOLLO_TOKEN")
+
+        assert cfg.resolve_token() == "front-env-token"
 
 
 class TestGetConnectedPlatforms:
@@ -156,6 +178,38 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+
+    def test_bridges_discord_role_bots_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  role_bots:\n"
+            "    apollo:\n"
+            "      token_env: APOLLO_TOKEN\n"
+            "    atlas: atlas-token\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("APOLLO_TOKEN", "apollo-token")
+
+        config = load_gateway_config()
+
+        discord_cfg = config.platforms[Platform.DISCORD]
+        assert set(discord_cfg.role_bots) == {"frontend", "backend"}
+        assert discord_cfg.role_bots["frontend"].resolve_token() == "apollo-token"
+        assert discord_cfg.role_bots["backend"].resolve_token() == "atlas-token"
+
+    def test_discord_role_bot_env_overrides(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_APOLLO_BOT_TOKEN", "apollo-env-token")
+        config = GatewayConfig()
+
+        _apply_env_overrides(config)
+
+        discord_cfg = config.platforms[Platform.DISCORD]
+        assert discord_cfg.enabled is False
+        assert discord_cfg.role_bots["frontend"].resolve_token() == "apollo-env-token"
 
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

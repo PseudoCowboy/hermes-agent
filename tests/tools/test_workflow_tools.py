@@ -874,7 +874,9 @@ class TestWorkflowDecompose:
         assert manifest["backend"]["owner"] == "atlas"
         assert manifest["backend"]["reviewer"] == "argus"
         assert manifest["backend"]["completionMode"] == "code"
+        assert manifest["backend"]["agentRole"] == "backend"
         assert manifest["qa"]["reviewer"] is None
+        assert manifest["qa"]["agentRole"] == "backend"
         assert manifest["qa"]["dependencies"] == ["backend"]
 
         for name in ("backend", "qa"):
@@ -885,6 +887,53 @@ class TestWorkflowDecompose:
             assert (sdir / "handoffs.md").is_file()
             ts = read_json_file(sdir / "task-state.json")
             assert ts == {"tasks": [], "currentTask": None, "lastReviewedBy": None}
+
+    def test_agent_roles_are_persisted_in_manifest_and_scope(self, projects_root):
+        root, _ = _bootstrap_approved_project(projects_root)
+        streams = [
+            {
+                "name": "extension-ui",
+                "owner": "apollo",
+                "reviewer": "argus",
+                "completionMode": "code",
+                "agentRole": "frontend",
+                "dependencies": [],
+                "acceptanceCriteria": ["Popup renders near selected text."],
+            },
+            {
+                "name": "acceptance-tests",
+                "owner": "hephaestus",
+                "reviewer": None,
+                "completionMode": "report",
+                "agentRole": "test",
+                "dependencies": ["extension-ui"],
+                "acceptanceCriteria": ["Selection workflow is verified."],
+            },
+        ]
+
+        result = json.loads(workflow_decompose(
+            "Decomp Test", streams=streams, plan_slug="the-plan"
+        ))
+
+        assert result["success"] is True
+        manifest = read_json_file(root / "workstreams" / "manifest.json")
+        assert manifest["extension-ui"]["agentRole"] == "frontend"
+        assert manifest["acceptance-tests"]["agentRole"] == "test"
+        scope = (root / "workstreams" / "acceptance-tests" / "scope.md").read_text()
+        assert "Agent role: test" in scope
+
+    def test_invalid_agent_role_rejected(self, projects_root):
+        _bootstrap_approved_project(projects_root)
+        streams = [{
+            "name": "backend", "owner": "atlas", "reviewer": "argus",
+            "completionMode": "code", "agentRole": "designer",
+            "acceptanceCriteria": ["x"],
+        }]
+
+        result = json.loads(workflow_decompose("Decomp Test", streams=streams))
+
+        assert "error" in result
+        assert "agentRole" in result["error"]
 
     def test_updates_plan_state_to_decomposed(self, projects_root):
         _bootstrap_approved_project(projects_root)

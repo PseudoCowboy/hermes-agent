@@ -45,6 +45,18 @@ def test_role_to_persona_backend():
     assert personas.role_to_persona("backend") == personas.IMPLEMENTER_BACKEND
 
 
+
+def test_role_to_persona_test():
+    assert personas.role_to_persona("test") == personas.TEST_AGENT
+
+
+def test_load_persona_system_prompt_test_returns_nonempty():
+    text = personas.load_persona_system_prompt(personas.TEST_AGENT)
+    assert isinstance(text, str)
+    assert text.strip(), "test prompt is empty"
+    assert "test agent" in text.lower() or "verification" in text.lower()
+
+
 def test_role_to_persona_rejects_unknown():
     with pytest.raises(ValueError):
         personas.role_to_persona("fullstack")
@@ -57,4 +69,4 @@ def test_role_to_persona_rejects_empty_string():
 
 def test_unknown_persona_raises():
     with pytest.raises(personas.UnknownPersonaError):
-        personas.load_persona_system_prompt("test_agent")  # registered id, no prompt yet
+        personas.load_persona_system_prompt("not_a_persona")

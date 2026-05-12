@@ -74,8 +74,11 @@ wrong project directory and approval will silently no-op.
    - **✅ approve**: call `workflow_approve_plan`, then call
      `workflow_decompose` with `streams=[...]` mirroring the plan you
      drafted in step 2 — each stream needs `name`, `agentRole`
-     (`"frontend"` or `"backend"`), and a free-text `description` (the
-     scope/acceptance summary).  This writes
+     (`"frontend"`, `"backend"`, or `"test"`), and a free-text
+     `description` (the scope/acceptance summary).  Use `"test"` for
+     dedicated verification, QA automation, or acceptance-test work that
+     should be owned by the test agent instead of an implementation
+     stream.  This writes
      `workstreams/manifest.json`, which the post-turn bootstrap reads
      to spin up per-stream channels and worktrees.  After decompose
      succeeds, post a final message: "Plan approved. Implementation

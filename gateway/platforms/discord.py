@@ -43,6 +43,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.discord_roles import normalize_discord_role
 import re
 
 from gateway.platforms.base import (
@@ -483,6 +484,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        # Optional send-only clients for role-specific bot identities.
+        # The primary client remains the only inbound router/admin owner.
+        self._role_bot_clients: Dict[str, Any] = {}
+        self._role_bot_clients_by_token: Dict[str, Any] = {}
+        self._role_bot_tasks_by_token: Dict[str, asyncio.Task] = {}
+        self._role_bot_lock_tokens: set[str] = set()
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -719,6 +726,8 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             set_active_adapter(self)
 
+            await self._connect_role_bots()
+
             self._running = True
             return True
 
@@ -763,6 +772,8 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
 
+        await self._disconnect_role_bots()
+
         if self._client:
             try:
                 await self._client.close()
@@ -801,6 +812,256 @@ class DiscordAdapter(BasePlatformAdapter):
             pass
 
         logger.info("[%s] Disconnected", self.name)
+
+    def _configured_role_bot_tokens(self) -> Dict[str, str]:
+        """Return normalized role -> token for configured role bots."""
+        role_bots = getattr(self.config, "role_bots", None) or {}
+        out: Dict[str, str] = {}
+        for raw_role, cfg in role_bots.items():
+            role = normalize_discord_role(str(raw_role))
+            if not role:
+                continue
+            token = cfg.resolve_token() if hasattr(cfg, "resolve_token") else None
+            if token:
+                out[role] = token
+        return out
+
+    async def _connect_role_bots(self) -> None:
+        """Connect optional send-only clients for configured role bots.
+
+        Failures are logged and swallowed so the primary Discord gateway
+        remains usable even when an auxiliary token is missing permissions
+        or has not been set up yet.
+        """
+        if not DISCORD_AVAILABLE:
+            return
+        role_tokens = self._configured_role_bot_tokens()
+        if not role_tokens:
+            return
+
+        primary_token = (self.config.token or "").strip()
+        failed_tokens: set[str] = set()
+        for role, token in role_tokens.items():
+            if not token or token == primary_token:
+                continue
+            if token in failed_tokens:
+                continue
+            existing = self._role_bot_clients_by_token.get(token)
+            if existing is not None:
+                self._role_bot_clients[role] = existing
+                continue
+
+            try:
+                from gateway.status import acquire_scoped_lock
+                acquired, existing_owner = acquire_scoped_lock(
+                    "discord-bot-token",
+                    token,
+                    metadata={"platform": "discord", "role_bot": role},
+                )
+                if not acquired:
+                    owner_pid = (
+                        existing_owner.get("pid")
+                        if isinstance(existing_owner, dict)
+                        else None
+                    )
+                    logger.warning(
+                        "[%s] Discord role bot %s token already in use%s; "
+                        "falling back to primary bot for this role",
+                        self.name,
+                        role,
+                        f" (PID {owner_pid})" if owner_pid else "",
+                    )
+                    continue
+                self._role_bot_lock_tokens.add(token)
+            except Exception:
+                logger.warning(
+                    "[%s] Failed to acquire token lock for role bot %s; "
+                    "falling back to primary bot",
+                    self.name,
+                    role,
+                    exc_info=True,
+                )
+                continue
+
+            ready = asyncio.Event()
+            intents = Intents.default()
+            intents.guild_messages = True
+            role_client = discord.Client(intents=intents)
+
+            async def on_ready(role_label=role, client=role_client):
+                logger.info(
+                    "[%s] Connected Discord role bot %s as %s",
+                    self.name,
+                    role_label,
+                    client.user,
+                )
+                ready.set()
+
+            role_client.event(on_ready)
+
+            task = asyncio.create_task(
+                role_client.start(token),
+                name=f"discord-role-bot:{role}",
+            )
+            wait_task = asyncio.create_task(ready.wait())
+            try:
+                done, pending = await asyncio.wait(
+                    {task, wait_task},
+                    timeout=30,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if wait_task not in done:
+                    if task in done:
+                        exc = task.exception()
+                        if exc is not None:
+                            raise exc
+                        raise RuntimeError("role bot client exited before ready")
+                    raise asyncio.TimeoutError()
+                self._role_bot_clients_by_token[token] = role_client
+                self._role_bot_tasks_by_token[token] = task
+                self._role_bot_clients[role] = role_client
+                for pending_task in pending:
+                    if pending_task is wait_task:
+                        pending_task.cancel()
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to connect Discord role bot %s: %s; "
+                    "falling back to primary bot for this role",
+                    self.name,
+                    role,
+                    exc,
+                    exc_info=True,
+                )
+                task.cancel()
+                wait_task.cancel()
+                failed_tokens.add(token)
+                try:
+                    await role_client.close()
+                except Exception:
+                    pass
+                try:
+                    from gateway.status import release_scoped_lock
+                    release_scoped_lock("discord-bot-token", token)
+                    self._role_bot_lock_tokens.discard(token)
+                except Exception:
+                    pass
+
+    async def _disconnect_role_bots(self) -> None:
+        """Close auxiliary role clients and release their token locks."""
+        clients = list(self._role_bot_clients_by_token.items())
+        for token, client in clients:
+            try:
+                await client.close()
+            except Exception as e:
+                logger.debug(
+                    "[%s] Error closing Discord role bot client: %s",
+                    self.name,
+                    e,
+                )
+            task = self._role_bot_tasks_by_token.get(token)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        try:
+            from gateway.status import release_scoped_lock
+            for token in list(self._role_bot_lock_tokens):
+                release_scoped_lock("discord-bot-token", token)
+        except Exception:
+            pass
+        self._role_bot_clients.clear()
+        self._role_bot_clients_by_token.clear()
+        self._role_bot_tasks_by_token.clear()
+        self._role_bot_lock_tokens.clear()
+
+    async def _send_with_client(
+        self,
+        client: Any,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send using the provided Discord client object."""
+        try:
+            channel = client.get_channel(int(chat_id))
+            if not channel:
+                channel = await client.fetch_channel(int(chat_id))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            message_ids = []
+            reference = None
+
+            if reply_to and self._reply_to_mode != "off":
+                try:
+                    reference = await channel.fetch_message(int(reply_to))
+                except Exception as e:
+                    logger.debug("Could not fetch reply-to message: %s", e)
+
+            for i, chunk in enumerate(chunks):
+                chunk_reference = reference if (self._reply_to_mode == "all" or i == 0) else None
+                msg = await channel.send(content=chunk, reference=chunk_reference)
+                message_ids.append(str(msg.id))
+
+            return SendResult(
+                success=True,
+                message_id=message_ids[0] if message_ids else None,
+                raw_response={"message_ids": message_ids},
+            )
+        except TypeError:
+            # Test fakes and some discord.py-compatible objects expose
+            # channel.send(content) but not a ``reference`` kwarg.
+            try:
+                channel = client.get_channel(int(chat_id))
+                if not channel:
+                    channel = await client.fetch_channel(int(chat_id))
+                formatted = self.format_message(content)
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                message_ids = []
+                for chunk in chunks:
+                    msg = await channel.send(chunk)
+                    message_ids.append(str(msg.id))
+                return SendResult(
+                    success=True,
+                    message_id=message_ids[0] if message_ids else None,
+                    raw_response={"message_ids": message_ids},
+                )
+            except Exception as e:
+                return SendResult(success=False, error=str(e))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def send_for_role(
+        self,
+        role: str,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Discord message through a role bot when configured.
+
+        Missing, unconnected, or failing role clients fall back to the
+        primary adapter so role-bot setup never blocks project progress.
+        """
+        norm_role = normalize_discord_role(role)
+        client = self._role_bot_clients.get(norm_role)
+        if client is None:
+            return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        result = await self._send_with_client(client, chat_id, content, reply_to=reply_to)
+        if result.success:
+            return result
+        logger.warning(
+            "[%s] Discord role bot %s send failed: %s; falling back to primary bot",
+            self.name,
+            norm_role,
+            result.error,
+        )
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""

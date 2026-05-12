@@ -18,6 +18,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
+from gateway.discord_roles import ROLE_TOKEN_ENV_VARS, normalize_discord_role
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,44 @@ class SessionResetPolicy:
 
 
 @dataclass
+class DiscordRoleBotConfig:
+    """Optional send-only Discord bot identity for one agent role."""
+
+    token: Optional[str] = None
+    token_env: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        if self.token:
+            out["token"] = self.token
+        if self.token_env:
+            out["token_env"] = self.token_env
+        return out
+
+    @classmethod
+    def from_value(cls, value: Any) -> "DiscordRoleBotConfig":
+        if isinstance(value, str):
+            return cls(token=value)
+        if isinstance(value, dict):
+            token = value.get("token")
+            token_env = value.get("token_env") or value.get("env")
+            return cls(
+                token=str(token) if token is not None else None,
+                token_env=str(token_env) if token_env is not None else None,
+            )
+        return cls()
+
+    def resolve_token(self) -> Optional[str]:
+        if isinstance(self.token, str) and self.token.strip():
+            return self.token.strip()
+        if isinstance(self.token_env, str) and self.token_env.strip():
+            env_val = os.getenv(self.token_env.strip())
+            if env_val and env_val.strip():
+                return env_val.strip()
+        return None
+
+
+@dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
@@ -161,6 +200,12 @@ class PlatformConfig:
     orchestration_home_channel_id: Optional[str] = None
     orchestration_guild_id: Optional[str] = None
 
+    # Discord orchestration role bots. Only used by the Discord adapter;
+    # stored here so config.yaml and gateway.json round-trip through one
+    # schema. Keys are normalized role aliases such as "frontend" or
+    # "orchestrator".
+    role_bots: Dict[str, DiscordRoleBotConfig] = field(default_factory=dict)
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -180,6 +225,10 @@ class PlatformConfig:
             result["orchestration_home_channel_id"] = self.orchestration_home_channel_id
         if self.orchestration_guild_id:
             result["orchestration_guild_id"] = self.orchestration_guild_id
+        if self.role_bots:
+            result["role_bots"] = {
+                role: cfg.to_dict() for role, cfg in self.role_bots.items()
+            }
         return result
 
     @classmethod
@@ -207,6 +256,16 @@ class PlatformConfig:
             orch_channel = None
             orch_guild = None
 
+        role_bots: Dict[str, DiscordRoleBotConfig] = {}
+        raw_role_bots = data.get("role_bots")
+        if raw_role_bots is None and isinstance(data.get("extra"), dict):
+            raw_role_bots = data["extra"].get("role_bots")
+        if isinstance(raw_role_bots, dict):
+            for role, value in raw_role_bots.items():
+                norm_role = normalize_discord_role(str(role))
+                if norm_role:
+                    role_bots[norm_role] = DiscordRoleBotConfig.from_value(value)
+
         return cls(
             enabled=data.get("enabled", False),
             token=data.get("token"),
@@ -215,6 +274,7 @@ class PlatformConfig:
             reply_to_mode=data.get("reply_to_mode", "first"),
             orchestration_home_channel_id=orch_channel,
             orchestration_guild_id=orch_guild,
+            role_bots=role_bots,
             extra=data.get("extra", {}),
         )
 
@@ -665,6 +725,19 @@ def load_gateway_config() -> GatewayConfig:
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})
             if isinstance(discord_cfg, dict):
+                role_bots = discord_cfg.get("role_bots")
+                if isinstance(role_bots, dict):
+                    discord_platform = platforms_data.setdefault("discord", {})
+                    if not isinstance(discord_platform, dict):
+                        discord_platform = {}
+                        platforms_data["discord"] = discord_platform
+                    existing_role_bots = discord_platform.get("role_bots")
+                    if not isinstance(existing_role_bots, dict):
+                        existing_role_bots = {}
+                    discord_platform["role_bots"] = {
+                        **existing_role_bots,
+                        **role_bots,
+                    }
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
                 frc = discord_cfg.get("free_response_channels")
@@ -823,6 +896,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].enabled = True
         config.platforms[Platform.DISCORD].token = discord_token
+
+    for role, env_names in ROLE_TOKEN_ENV_VARS.items():
+        for env_name in env_names:
+            role_token = os.getenv(env_name)
+            if not role_token:
+                continue
+            if Platform.DISCORD not in config.platforms:
+                config.platforms[Platform.DISCORD] = PlatformConfig()
+            config.platforms[Platform.DISCORD].role_bots[role] = DiscordRoleBotConfig(
+                token=role_token,
+            )
+            break
     
     discord_home = os.getenv("DISCORD_HOME_CHANNEL")
     if discord_home and Platform.DISCORD in config.platforms:

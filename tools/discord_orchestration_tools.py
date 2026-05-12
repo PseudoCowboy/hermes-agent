@@ -40,7 +40,7 @@ from gateway.platforms.discord_orchestration import (
     create_stream_channel,
     get_active_adapter,
 )
-from tools.registry import registry
+from tools.registry import get_dispatch_context, registry
 
 logger = logging.getLogger(__name__)
 
@@ -429,10 +429,27 @@ def _handle_archive_project_category(args: dict, **_kw: Any) -> str:
 
 def _handle_post_message(args: dict, **_kw: Any) -> str:
     try:
-        channel = _resolve_channel(args.get("channel_id"))
+        adapter = get_active_adapter()
+        channel_id = _coerce_int_id(args.get("channel_id"), label="channel_id")
         content = args.get("content")
         if not isinstance(content, str) or not content:
             raise OrchestrationError("content must be a non-empty string")
+        ctx = get_dispatch_context()
+        role = getattr(ctx, "discord_bot_role", None) if ctx is not None else None
+        send_for_role = getattr(adapter, "send_for_role", None)
+        if role and callable(send_for_role):
+            result = _run_sync(send_for_role(role, str(channel_id), content))
+            if getattr(result, "success", False):
+                return _ok({
+                    "message_id": str(getattr(result, "message_id", "") or ""),
+                    "channel_id": str(channel_id),
+                    "role": role,
+                })
+            raise OrchestrationError(
+                f"role bot send failed: {getattr(result, 'error', 'unknown error')}"
+            )
+
+        channel = _resolve_channel(channel_id)
         send = getattr(channel, "send", None)
         if not callable(send):
             raise OrchestrationError(

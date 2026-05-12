@@ -265,6 +265,7 @@ async def test_bootstrap_happy_path_creates_two_streams(
         assert sess.persona in {"implementer_frontend", "implementer_backend"}
         assert sess.stream_name in {"frontend", "backend"}
         assert sess.role in {"frontend", "backend"}
+        assert sess.discord_bot_role == sess.role
         # Frontend role → frontend persona; backend role → backend persona.
         assert sess.persona == f"implementer_{sess.role}"
         assert sess.worktree_root is not None
@@ -513,6 +514,38 @@ async def test_bootstrap_defaults_agent_role_to_backend_when_missing(
     assert result.error is None, result.error
     assert len(result.streams) == 1
     assert result.streams[0].role == "backend"
+
+    await _cancel_session_workers(runner)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_accepts_test_agent_role(
+    git_repo_with_projects, guild_with_category, main_channel_in_category,
+):
+    guild, cat = guild_with_category
+    adapter = FakeAdapter(guild)
+    runner = FakeRunner()
+
+    from gateway.stream_bootstrap import bootstrap_streams_for_project
+
+    result = await bootstrap_streams_for_project(
+        runner=runner,
+        scope_id=str(cat.id),
+        slug="billing",
+        main_channel_id=str(main_channel_in_category.id),
+        workstream_manifest={"qa": {"agentRole": "test"}},
+        approved_head_sha="abc",
+        adapter=adapter,
+        guild_id="12345",
+    )
+
+    assert result.error is None, result.error
+    assert len(result.streams) == 1
+    assert result.streams[0].role == "test"
+    sessions = list(runner._session_router._sessions.values())
+    assert len(sessions) == 1
+    assert sessions[0].persona == "test_agent"
+    assert sessions[0].discord_bot_role == "test"
 
     await _cancel_session_workers(runner)
 

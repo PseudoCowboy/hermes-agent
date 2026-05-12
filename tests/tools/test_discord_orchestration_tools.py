@@ -17,7 +17,7 @@ import pytest
 
 # Importing the tools module triggers registry.register() side effects.
 from tools import discord_orchestration_tools  # noqa: F401
-from tools.registry import registry
+from tools.registry import ToolDispatchContext, registry, use_dispatch_context
 
 from gateway.platforms.discord_orchestration import (
     OrchestrationError,
@@ -123,6 +123,20 @@ class _FakeAdapter:
         self.guild = _FakeGuild()
         self._client = _FakeClient(self.guild)
         self._reaction_waiter = ReactionWaiter()
+
+
+class _FakeRoleAdapter(_FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.role_sends: List[tuple] = []
+
+    async def send_for_role(self, role, chat_id, content, **kwargs):
+        self.role_sends.append((role, str(chat_id), content))
+        return type(
+            "Result",
+            (),
+            {"success": True, "message_id": "424242", "error": None},
+        )()
 
 
 @pytest.fixture()
@@ -331,6 +345,25 @@ class TestPostMessage:
         assert "error" not in out, out
         assert ch.sent == ["hello"]
         assert int(out["message_id"]) >= 900000
+
+    def test_uses_dispatch_role_when_available(self):
+        fake = _FakeRoleAdapter()
+        set_active_adapter(fake)
+        try:
+            with use_dispatch_context(
+                ToolDispatchContext(discord_bot_role="frontend")
+            ):
+                out = _dispatch(
+                    "discord_post_message",
+                    {"channel_id": "5555", "content": "hello as frontend"},
+                )
+        finally:
+            clear_active_adapter()
+
+        assert "error" not in out, out
+        assert out["message_id"] == "424242"
+        assert out["role"] == "frontend"
+        assert fake.role_sends == [("frontend", "5555", "hello as frontend")]
 
     def test_blank_content_rejected(self, adapter):
         ch = _FakeChannel(id=5556)

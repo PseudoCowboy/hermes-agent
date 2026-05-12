@@ -7,7 +7,7 @@ post-turn and calls into here).
 
 For each stream declared in the workstream manifest, we:
 
-1. Validate ``agentRole ∈ {frontend, backend}`` (default ``backend``).
+1. Validate ``agentRole ∈ {frontend, backend, test}`` (default ``backend``).
 2. Materialise the per-stream git worktree.
 3. Create the ``{slug}-{stream}`` text channel under the project's
    Discord category.
@@ -65,10 +65,11 @@ if TYPE_CHECKING:  # pragma: no cover - import-cycle protection
 logger = logging.getLogger(__name__)
 
 
-# Allowed implementer agent roles.  Drives model routing in P7a-2 (frontend
-# → Gemini, backend → Claude).  Validated at bootstrap so a typo in the
-# manifest fails loudly instead of silently routing to the wrong model.
-_VALID_AGENT_ROLES = frozenset({"frontend", "backend"})
+# Allowed stream agent roles.  Drives model routing in P7a-2+ (frontend
+# -> Gemini, backend -> Claude, test -> Codex when configured).  Validated
+# at bootstrap so a typo in the manifest fails loudly instead of silently
+# routing to the wrong model.
+_VALID_AGENT_ROLES = frozenset({"frontend", "backend", "test"})
 _DEFAULT_AGENT_ROLE = "backend"
 
 
@@ -392,6 +393,7 @@ async def _bootstrap_under_lock(
                 session.stream_name = stream_name
                 session.worktree_root = wt_path
                 session.role = role
+                session.discord_bot_role = role
                 runner._session_router.register(session_key, session)
                 partial_session_key = session_key
 

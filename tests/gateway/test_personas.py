@@ -41,11 +41,10 @@ def test_unknown_persona_raises():
         load_persona_system_prompt("definitely_not_a_persona")
 
 
-def test_implementer_and_test_agent_unregistered_until_p7():
-    """Implementer / test-agent prompts are intentionally not registered yet."""
+def test_legacy_implementer_unregistered_but_test_agent_registered():
+    """Legacy generic implementer stays unregistered; test agent now ships."""
     assert IMPLEMENTER not in PERSONA_PROMPT_PATHS
-    assert TEST_AGENT not in PERSONA_PROMPT_PATHS
+    assert TEST_AGENT in PERSONA_PROMPT_PATHS
     with pytest.raises(UnknownPersonaError):
         load_persona_system_prompt(IMPLEMENTER)
-    with pytest.raises(UnknownPersonaError):
-        load_persona_system_prompt(TEST_AGENT)
+    assert load_persona_system_prompt(TEST_AGENT).strip()

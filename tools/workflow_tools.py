@@ -91,6 +91,10 @@ TASK_TRANSITIONS = {
 # Completion modes a workstream may declare.
 VALID_COMPLETION_MODES = frozenset({"code", "report", "design", "research"})
 
+# Stream agent roles consumed by gateway.stream_bootstrap.
+VALID_AGENT_ROLES = frozenset({"frontend", "backend", "test"})
+DEFAULT_AGENT_ROLE = "backend"
+
 # Valid statuses for a handoff record.
 VALID_HANDOFF_STATUSES = frozenset({"pending", "ready", "accepted", "blocked"})
 
@@ -1469,6 +1473,7 @@ def workflow_status(project_name: str, task_id: str = None, scope_id: str | None
                         ws_info["owner"] = m.get("owner")
                         ws_info["reviewer"] = m.get("reviewer")
                         ws_info["completionMode"] = m.get("completionMode")
+                        ws_info["agentRole"] = m.get("agentRole")
                 workstreams.append(ws_info)
 
     # --- Coordination ---
@@ -1633,7 +1638,7 @@ WORKFLOW_DECOMPOSE_SCHEMA = {
             },
             "streams": {
                 "type": "array",
-                "description": "List of workstream objects. Each stream: name (simple directory name), owner, completionMode in {code,report,design,research}, reviewer (required and distinct from owner when completionMode='code'), acceptanceCriteria (non-empty list of strings), dependencies (list of other stream names), optional scope (markdown string).",
+                "description": "List of workstream objects. Each stream: name (simple directory name), owner, completionMode in {code,report,design,research}, reviewer (required and distinct from owner when completionMode='code'), agentRole in {frontend,backend,test}, acceptanceCriteria (non-empty list of strings), dependencies (list of other stream names), optional scope (markdown string).",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1643,6 +1648,11 @@ WORKFLOW_DECOMPOSE_SCHEMA = {
                         "completionMode": {
                             "type": "string",
                             "enum": ["code", "report", "design", "research"],
+                        },
+                        "agentRole": {
+                            "type": "string",
+                            "enum": ["frontend", "backend", "test"],
+                            "description": "Agent role that should execute this stream. Defaults to backend when omitted.",
                         },
                         "dependencies": {"type": "array", "items": {"type": "string"}},
                         "acceptanceCriteria": {"type": "array", "items": {"type": "string"}},
@@ -1932,6 +1942,16 @@ def _validate_streams(streams):
                     f"code stream '{name}' requires a reviewer distinct from owner"
                 ), []
 
+        agent_role = raw.get("agentRole", DEFAULT_AGENT_ROLE)
+        if not isinstance(agent_role, str) or not agent_role.strip():
+            return f"stream '{name}' agentRole must be a non-empty string", []
+        agent_role = agent_role.strip()
+        if agent_role not in VALID_AGENT_ROLES:
+            return (
+                f"stream '{name}' has invalid agentRole {agent_role!r}. "
+                f"Allowed: {sorted(VALID_AGENT_ROLES)}"
+            ), []
+
         criteria = raw.get("acceptanceCriteria", [])
         if not isinstance(criteria, list) or len(criteria) == 0:
             return f"stream '{name}' requires non-empty acceptanceCriteria", []
@@ -1953,6 +1973,7 @@ def _validate_streams(streams):
             "owner": owner,
             "reviewer": reviewer if reviewer else None,
             "completionMode": mode,
+            "agentRole": agent_role,
             "dependencies": list(deps),
             "acceptanceCriteria": [c.strip() for c in criteria],
             "scope": scope,
@@ -1978,6 +1999,7 @@ def _render_scope(stream: dict) -> str:
         f"# {stream['name']}\n\n"
         f"Owner: {stream['owner']}\n"
         f"Reviewer: {reviewer}\n"
+        f"Agent role: {stream.get('agentRole', DEFAULT_AGENT_ROLE)}\n"
         f"Completion mode: {stream['completionMode']}\n\n"
         "## Acceptance Criteria\n\n"
         f"{bullets}\n"
@@ -2116,6 +2138,7 @@ def workflow_decompose(
                     "owner": s["owner"],
                     "reviewer": s["reviewer"],
                     "completionMode": s["completionMode"],
+                    "agentRole": s["agentRole"],
                     "dependencies": s["dependencies"],
                     "acceptanceCriteria": s["acceptanceCriteria"],
                 }
