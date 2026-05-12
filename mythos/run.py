@@ -35,6 +35,12 @@ def main() -> None:
         format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
     )
 
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
     cfg = MythosConfig.from_env_and_yaml(args.config)
     if not cfg.discord_bot_token or not cfg.discord_guild_id or not cfg.main_channel_id:
         raise SystemExit(

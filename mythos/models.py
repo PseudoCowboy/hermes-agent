@@ -50,6 +50,7 @@ class Project:
     spec_version: int = 0
     review_iteration: int = 0
     discipline_channels: Dict[str, int] = field(default_factory=dict)  # discipline -> channel_id
+    completed_disciplines: List[str] = field(default_factory=list)
     working_dir: str = ""
 
     @staticmethod

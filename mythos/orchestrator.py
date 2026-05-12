@@ -106,11 +106,19 @@ class MythosOrchestrator:
 
     async def start(self) -> None:
         self.discord.on_message(self.on_discord_message)
-        await self.discord.start(self.config.discord_bot_token, self.config.discord_guild_id)
+        await self.discord.start(
+            self.config.discord_bot_token,
+            self.config.discord_guild_id,
+            role_tokens=self.config.discord_role_bot_tokens,
+        )
         logger.info("mythos orchestrator started")
 
     async def stop(self) -> None:
         await self.discord.stop()
+
+    async def _send_agent(self, role: str, channel_id: int, content: str) -> int:
+        """Post agent-authored text through the configured role bot if any."""
+        return await self.discord.send_message_as(role, channel_id, content)
 
     # ------------------------------------------------------------------
     # Routing entrypoint
@@ -158,7 +166,8 @@ class MythosOrchestrator:
         working_dir.mkdir(parents=True, exist_ok=True)
 
         # Acknowledge in main.
-        await self.discord.send_message(
+        await self._send_agent(
+            "athena",
             self.config.main_channel_id,
             f"Athena here. Got your request — opening project channel `{channel_name}` "
             f"(id `{project_id}`).",
@@ -170,7 +179,8 @@ class MythosOrchestrator:
                 name=channel_name, topic=f"Mythos project {project_id}",
             )
         except Exception as e:
-            await self.discord.send_message(
+            await self._send_agent(
+                "athena",
                 self.config.main_channel_id,
                 f"Athena: failed to create project channel ({e}). Please check bot permissions.",
             )
@@ -188,7 +198,8 @@ class MythosOrchestrator:
         self._channel_to_project[channel_id] = project_id
 
         # Seed the project channel.
-        await self.discord.send_message(
+        await self._send_agent(
+            "athena",
             channel_id,
             (
                 f"**Project `{project_id}`**\n"
@@ -216,7 +227,8 @@ class MythosOrchestrator:
             if project.state == ProjectState.AWAITING_APPROVAL:
                 if APPROVE_RE.match(msg.content):
                     if msg.author_id != project.owner_user_id:
-                        await self.discord.send_message(
+                        await self._send_agent(
+                            "athena",
                             project.project_channel_id,
                             f"Athena: only the project owner (<@{project.owner_user_id}>) "
                             f"can approve.",
@@ -230,7 +242,8 @@ class MythosOrchestrator:
                     ))
                     project.state = ProjectState.DECOMPOSING
                     self.store.update_project(project)
-                    await self.discord.send_message(
+                    await self._send_agent(
+                        "athena",
                         project.project_channel_id,
                         f"Athena: ✅ approval recorded for spec v{spec.version if spec else 0}. "
                         f"Decomposing work…",
@@ -240,7 +253,8 @@ class MythosOrchestrator:
 
                 if REVISE_RE.match(msg.content) or REJECT_RE.match(msg.content):
                     if project.review_iteration >= self.config.max_review_iterations:
-                        await self.discord.send_message(
+                        await self._send_agent(
+                            "athena",
                             project.project_channel_id,
                             f"Athena: max revision rounds ({self.config.max_review_iterations}) "
                             f"reached. Please clarify what to change in plain English; I'll forward "
@@ -249,7 +263,8 @@ class MythosOrchestrator:
                         return
                     project.state = ProjectState.REVISING
                     self.store.update_project(project)
-                    await self.discord.send_message(
+                    await self._send_agent(
+                        "athena",
                         project.project_channel_id,
                         f"Athena: revision requested. Forwarding feedback to Prometheus.",
                     )
@@ -258,7 +273,8 @@ class MythosOrchestrator:
                     return
 
                 # Ambiguous — confirm explicit approval (FR-015 / edge case).
-                await self.discord.send_message(
+                await self._send_agent(
+                    "athena",
                     project.project_channel_id,
                     f"Athena: I need an explicit `approve`, `revise`, or `reject` to proceed.",
                 )
@@ -318,7 +334,8 @@ class MythosOrchestrator:
 
             # If output contains questions, post them and pause.
             if not result.ok:
-                await self.discord.send_message(
+                await self._send_agent(
+                    "prometheus",
                     project.project_channel_id,
                     f"⚠️ Prometheus failed: {text[:500]}",
                 )
@@ -329,7 +346,8 @@ class MythosOrchestrator:
             if QUESTION_RE.search(text or ""):
                 project.state = ProjectState.CLARIFYING
                 self.store.update_project(project)
-                await self.discord.send_message(
+                await self._send_agent(
+                    "prometheus",
                     project.project_channel_id,
                     f"**Prometheus** has clarifying questions:\n{text}",
                 )
@@ -343,7 +361,8 @@ class MythosOrchestrator:
             project.state = ProjectState.REVIEWING
             self.store.update_project(project)
 
-            await self.discord.send_message(
+            await self._send_agent(
+                "prometheus",
                 project.project_channel_id,
                 f"**Prometheus** posted draft spec v{new_version}:\n\n{text}\n\n"
                 f"@Argus please review.",
@@ -367,7 +386,8 @@ class MythosOrchestrator:
             result = await self.agents["argus"].run(prompt, wd)
             text = result.display()
             if not result.ok:
-                await self.discord.send_message(
+                await self._send_agent(
+                    "argus",
                     project.project_channel_id,
                     f"⚠️ Argus failed: {text[:500]}. Athena will surface to user.",
                 )
@@ -385,7 +405,8 @@ class MythosOrchestrator:
             project.state = ProjectState.AWAITING_APPROVAL
             self.store.update_project(project)
 
-            await self.discord.send_message(
+            await self._send_agent(
+                "argus",
                 project.project_channel_id,
                 f"**Argus** review of spec v{spec.version}:\n\n{text}\n\n"
                 f"Review complete. @Athena please surface to user.",
@@ -393,7 +414,8 @@ class MythosOrchestrator:
             await self._post_for_approval(project)
 
     async def _post_for_approval(self, project: Project) -> None:
-        await self.discord.send_message(
+        await self._send_agent(
+            "athena",
             project.project_channel_id,
             (
                 f"**Athena**: @<@{project.owner_user_id}> the spec and review are ready.\n"
@@ -443,7 +465,8 @@ class MythosOrchestrator:
                 self._discipline_channel[ch_id] = (project.project_id, disc.value)
 
                 agent_name = DISCIPLINE_AGENT[disc]
-                await self.discord.send_message(
+                await self._send_agent(
+                    "athena",
                     ch_id,
                     (
                         f"**{disc.value.title()} sub-channel for project `{project.project_id}`**\n"
@@ -455,7 +478,8 @@ class MythosOrchestrator:
             project.state = ProjectState.IN_PROGRESS
             self.store.update_project(project)
 
-            await self.discord.send_message(
+            await self._send_agent(
+                "athena",
                 project.project_channel_id,
                 f"**Athena**: created {len(disciplines)} sub-channel(s): "
                 + ", ".join(f"`{d.value}`" for d in disciplines),
@@ -491,10 +515,50 @@ class MythosOrchestrator:
         )
         result = await agent.run(prompt, wd)
         text = result.display(max_chars=1500)
-        await self.discord.send_message(
+        await self._send_agent(
+            agent_name,
             ch_id,
             f"**{agent.role_name} ({agent.name})** finished:\n\n{text}",
         )
+        await self._mark_specialist_complete(project_id, discipline, text)
+
+    async def _mark_specialist_complete(
+        self, project_id: str, discipline: Discipline, output: str,
+    ) -> None:
+        """Record specialist completion and announce project completion once."""
+        marker = f"{discipline.value.upper()} WORK COMPLETE"
+        if marker not in (output or "").upper():
+            return
+
+        completion_channel_id: Optional[int] = None
+        completion_text: Optional[str] = None
+        async with self._lock(project_id):
+            project = self.store.get_project(project_id)
+            if project is None:
+                return
+            completed = set(project.completed_disciplines)
+            if discipline.value in completed:
+                return
+            completed.add(discipline.value)
+            ordered_completed = [
+                d for d in project.discipline_channels.keys() if d in completed
+            ]
+            project.completed_disciplines = ordered_completed
+
+            expected = set(project.discipline_channels.keys())
+            if expected and expected.issubset(completed) and project.state != ProjectState.COMPLETE:
+                project.state = ProjectState.COMPLETE
+                completion_channel_id = project.project_channel_id
+                completion_text = (
+                    f"**Athena**: ✅ project `{project.project_id}` complete. "
+                    "All specialist workstreams finished: "
+                    + ", ".join(f"`{name}`" for name in ordered_completed)
+                    + "."
+                )
+            self.store.update_project(project)
+
+        if completion_channel_id and completion_text:
+            await self._send_agent("athena", completion_channel_id, completion_text)
 
     # ------------------------------------------------------------------
     # Discipline channel: specialist replies + per-channel confinement
@@ -525,6 +589,8 @@ class MythosOrchestrator:
             f"if you are done."
         )
         result = await agent.run(prompt, wd)
-        await self.discord.send_message(
-            msg.channel_id, f"**{agent.role_name} ({agent.name})**: {result.display(1500)}"
+        text = result.display(1500)
+        await self._send_agent(
+            agent_name, msg.channel_id, f"**{agent.role_name} ({agent.name})**: {text}"
         )
+        await self._mark_specialist_complete(project_id, Discipline(discipline), text)

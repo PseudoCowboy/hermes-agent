@@ -30,6 +30,7 @@ CODEX_DEFAULT_CMD = [
     "codex", "exec",
     "-m", "gpt-5.5",
     "-c", "model_reasoning_effort=high",
+    "--dangerously-bypass-approvals-and-sandbox",
     "--skip-git-repo-check",
 ]
 CODEX_DEFAULT_ENV = {
@@ -40,6 +41,25 @@ CODEX_DEFAULT_ENV = {
 # Gemini takes the prompt as a flag rather than stdin.
 GEMINI_DEFAULT_CMD = ["gemini", "-m", "gemini-3.1-pro-preview", "-y"]
 GEMINI_DEFAULT_ENV: Dict[str, str] = {}
+
+
+AGENT_ROLE_NAMES = (
+    "athena",
+    "prometheus",
+    "argus",
+    "hephaestus",
+    "apollo",
+    "atlas",
+)
+
+
+ROLE_BOT_TOKEN_ENV_VARS: Dict[str, tuple[str, ...]] = {
+    role: (
+        f"MYTHOS_{role.upper()}_BOT_TOKEN",
+        f"DISCORD_{role.upper()}_BOT_TOKEN",
+    )
+    for role in AGENT_ROLE_NAMES
+}
 
 
 @dataclass
@@ -84,6 +104,9 @@ class MythosConfig:
     max_review_iterations: int = 2
     # Per-agent CLI configs (one per role).
     agent_cli: Dict[str, AgentCLIConfig] = field(default_factory=dict)
+    # Optional send-only Discord bot tokens by Mythos role. The primary
+    # DISCORD_BOT_TOKEN remains the only inbound/admin client.
+    discord_role_bot_tokens: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env_and_yaml(cls, yaml_path: Optional[Path] = None) -> "MythosConfig":
@@ -105,6 +128,11 @@ class MythosConfig:
                 cfg.state_dir = Path(data["state_dir"]).expanduser()
             if "max_review_iterations" in data:
                 cfg.max_review_iterations = int(data["max_review_iterations"])
+            for role, token in (data.get("discord_role_bots") or {}).items():
+                role_lc = str(role).lower().strip()
+                token_s = str(token).strip() if token is not None else ""
+                if role_lc in ROLE_BOT_TOKEN_ENV_VARS and token_s:
+                    cfg.discord_role_bot_tokens[role_lc] = token_s
             for role, override in (data.get("agents") or {}).items():
                 role_lc = role.lower()
                 if role_lc not in cfg.agent_cli:
@@ -129,6 +157,13 @@ class MythosConfig:
             cfg.state_dir = Path(os.environ["MYTHOS_STATE_DIR"]).expanduser()
         if os.environ.get("MYTHOS_MAX_ITERATIONS"):
             cfg.max_review_iterations = int(os.environ["MYTHOS_MAX_ITERATIONS"])
+
+        for role, env_names in ROLE_BOT_TOKEN_ENV_VARS.items():
+            for env_name in env_names:
+                token = os.environ.get(env_name)
+                if token and token.strip():
+                    cfg.discord_role_bot_tokens[role] = token.strip()
+                    break
 
         # Per-agent env-var endpoint overrides.
         _apply_env_override(cfg.agent_cli["athena"], "MYTHOS_CLAUDE")

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS projects (
     spec_version INTEGER NOT NULL DEFAULT 0,
     review_iteration INTEGER NOT NULL DEFAULT 0,
     discipline_channels TEXT NOT NULL DEFAULT '{}',
+    completed_disciplines TEXT NOT NULL DEFAULT '[]',
     working_dir TEXT NOT NULL DEFAULT ''
 );
 
@@ -76,7 +77,18 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            self._ensure_project_columns()
             self._conn.commit()
+
+    def _ensure_project_columns(self) -> None:
+        """Apply tiny additive migrations for existing Mythos sqlite files."""
+        cur = self._conn.execute("PRAGMA table_info(projects)")
+        cols = {row[1] for row in cur.fetchall()}
+        if "completed_disciplines" not in cols:
+            self._conn.execute(
+                "ALTER TABLE projects ADD COLUMN "
+                "completed_disciplines TEXT NOT NULL DEFAULT '[]'"
+            )
 
     @contextmanager
     def _cursor(self):
@@ -95,13 +107,15 @@ class Store:
             cur.execute(
                 """INSERT INTO projects (project_id, owner_user_id, seed_request,
                        project_channel_id, state, created_at, spec_version,
-                       review_iteration, discipline_channels, working_dir)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       review_iteration, discipline_channels,
+                       completed_disciplines, working_dir)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     p.project_id, p.owner_user_id, p.seed_request,
                     p.project_channel_id, p.state.value, p.created_at,
                     p.spec_version, p.review_iteration,
-                    json.dumps(p.discipline_channels), p.working_dir,
+                    json.dumps(p.discipline_channels),
+                    json.dumps(p.completed_disciplines), p.working_dir,
                 ),
             )
 
@@ -109,12 +123,14 @@ class Store:
         with self._cursor() as cur:
             cur.execute(
                 """UPDATE projects SET project_channel_id=?, state=?, spec_version=?,
-                       review_iteration=?, discipline_channels=?, working_dir=?
+                       review_iteration=?, discipline_channels=?,
+                       completed_disciplines=?, working_dir=?
                    WHERE project_id=?""",
                 (
                     p.project_channel_id, p.state.value, p.spec_version,
                     p.review_iteration, json.dumps(p.discipline_channels),
-                    p.working_dir, p.project_id,
+                    json.dumps(p.completed_disciplines), p.working_dir,
+                    p.project_id,
                 ),
             )
 
@@ -225,5 +241,6 @@ def _row_to_project(row: sqlite3.Row) -> Project:
         spec_version=row["spec_version"],
         review_iteration=row["review_iteration"],
         discipline_channels=json.loads(row["discipline_channels"] or "{}"),
+        completed_disciplines=json.loads(row["completed_disciplines"] or "[]"),
         working_dir=row["working_dir"],
     )
