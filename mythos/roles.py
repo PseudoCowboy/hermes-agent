@@ -54,58 +54,35 @@ class RoleBinding:
 
 
 def _claude_code_binding(role: Role) -> RoleBinding:
+    # Model + ANTHROPIC_BASE_URL/AUTH_TOKEN come from ~/.claude/settings.json
+    # so there is one source of truth for the Claude CLI.
     return RoleBinding(
         role=role,
         backend=Backend.CLAUDE_CODE,
-        command=[
-            "claude",
-            "--dangerously-skip-permissions",
-            "--effort",
-            "high",
-            "--print",
-        ],
-        env={
-            "ANTHROPIC_BASE_URL": "http://127.0.0.1:4141",
-            "ANTHROPIC_AUTH_TOKEN": "dummy",
-            "ANTHROPIC_MODEL": "claude-opus-4.7-1m-internal",
-        },
+        command=["claude", "--dangerously-skip-permissions", "--print"],
+        env={},
     )
 
 
 def _codex_binding(role: Role) -> RoleBinding:
+    # Model + provider/base_url come from ~/.codex/config.toml.
+    # OPENAI_API_KEY is provided via the process env (mythos/.env).
     return RoleBinding(
         role=role,
         backend=Backend.CODEX,
-        command=[
-            "codex",
-            "exec",
-            "-m",
-            "gpt-5.5",
-            "-c",
-            "model_reasoning_effort=high",
-            "--skip-git-repo-check",
-        ],
-        env={
-            "OPENAI_BASE_URL": "http://127.0.0.1:4141/v1",
-            "OPENAI_API_KEY": "dummy",
-        },
+        command=["codex", "exec", "--skip-git-repo-check"],
+        env={},
     )
 
 
 def _gemini_binding(role: Role) -> RoleBinding:
-    # Gemini uses its own preconfigured credentials; no proxy.
+    # Model + auth come from ~/.gemini/settings.json.
     # Prompt goes after -p; the trailing literal `-p` is replaced
-    # with the prompt string at invocation time. The env gets nothing.
+    # with the prompt string at invocation time.
     return RoleBinding(
         role=role,
         backend=Backend.GEMINI,
-        command=[
-            "gemini",
-            "-m",
-            "gemini-3.1-pro-preview",
-            "-y",
-            "-p",
-        ],
+        command=["gemini", "-y", "-p"],
         env={},
         prompt_as_arg=True,
     )
